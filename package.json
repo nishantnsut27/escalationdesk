@@ -8,7 +8,8 @@
     "build": "node node_modules/typescript/bin/tsc --noEmit && node node_modules/vite/bin/vite.js build",
     "preview": "node node_modules/vite/bin/vite.js preview --host 127.0.0.1",
     "test": "node --test tests/frontend.test.mjs",
-    "test:browser": "node tests/browser_acceptance.mjs"
+    "test:browser": "node tests/browser_acceptance.mjs",
+    "test:home": "node tests/homepage_acceptance.mjs"
   },
   "dependencies": {
     "@radix-ui/react-slot": "1.5.0",
