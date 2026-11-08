@@ -4,7 +4,7 @@ import type { HTMLAttributes } from 'react'
 import { cn } from '../../lib/utils'
 
 const variants = cva('badge', {
-  variants: { variant: { default: 'good', secondary: 'neutral', destructive: 'bad', outline: 'badge-outline' } },
+  variants: { variant: { default: 'good', secondary: 'neutral', destructive: 'bad', outline: 'badge-outline', neutral: 'neutral', info: 'badge-info', success: 'good', warning: 'badge-warning', error: 'bad' } },
   defaultVariants: { variant: 'secondary' },
 })
 

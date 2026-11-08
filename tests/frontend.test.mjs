@@ -18,6 +18,46 @@ const reportFixture = { assessment: 'inconclusive', origin: 'payment', summary: 
   hypotheses: [{ claim: 'Processing may be delayed.', evidence_ids: ['source-b'] }], recommendations: ['Inspect linked spans.'], limitations: ['Deeper cause unknown.'] }
 const investigationFixture = { id: 'saved', engine: 'groq', state: 'completed', created_at: '2026-11-02T00:00:05Z', completed_at: '2026-11-02T00:00:09Z', report: reportFixture, activity: [], usage: { requests: 2, total_tokens: 200 }, supplements: [] }
 
+test('durable routes retain evidence filters and only restore internal destinations after authentication', async () => {
+  const { parseRoute, destinationAfterAuth, evidenceFilters, logHref } = await components('src/routes.ts')
+  const link = logHref({ collection: 'saved collection', evidence: 'source-a', investigation: 'report-a', query: 'Caused by:', level: 'error' })
+  const route = parseRoute(link)
+  assert.equal(route.page, 'logs')
+  assert.equal(route.params.get('collection'), 'saved collection')
+  assert.equal(route.params.get('evidence'), 'source-a')
+  assert.equal(route.params.get('correlate'), '1')
+  assert.equal(evidenceFilters(route.params).get('query'), 'Caused by:')
+  assert.equal(evidenceFilters(route.params).has('investigation'), false)
+  assert.equal(destinationAfterAuth(link), link)
+  assert.equal(destinationAfterAuth('#/login', link), link)
+  assert.equal(destinationAfterAuth('#/login', 'https://example.test'), '#/dashboard')
+  assert.equal(destinationAfterAuth('#/demo-login', '', true), '#/demo')
+  assert.equal(parseRoute('#overview').page, 'dashboard')
+  assert.equal(parseRoute('#auth/verify/private-token').page, 'auth-link')
+  assert.equal(parseRoute('#/demo/recorded-case').id, 'recorded-case')
+})
+
+test('citation links prefer a known trace and never invent correlation for an uncorrelated observation', async () => {
+  const { logHref, parseRoute } = await components('src/routes.ts')
+  const row = { id: 'cited', kind: 'log', service: 'billing', timestamp: null, trace_id: 'trace-recorded', request_id: 'request-recorded' }
+  const traced = parseRoute(logHref({ row, request_id: 'stale-request' })).params
+  assert.equal(traced.get('trace_id'), 'trace-recorded')
+  assert.equal(traced.has('request_id'), false)
+  const uncorrelated = parseRoute(logHref({ row: { ...row, trace_id: undefined, request_id: undefined }, trace_id: 'unrelated' })).params
+  assert.equal(uncorrelated.has('trace_id'), false)
+  assert.equal(uncorrelated.has('request_id'), false)
+  assert.equal(uncorrelated.get('evidence'), 'cited')
+})
+
+test('source timestamps require a timezone and never use a browser-invented date', async () => {
+  const { sourceDate } = await components('src/lib/time.ts')
+  for (const invalid of [null, '', '2026-11-07', '2026-11-07T10:00:00', '2026-02-30T10:00:00Z', 'invalid']) assert.equal(sourceDate(invalid), null)
+  assert.equal(sourceDate('2026-11-07T15:30:00+05:30').toISOString(), '2026-11-07T10:00:00.000Z')
+  const { orderedEvidence, FullTime } = await components('src/reports.tsx')
+  assert.match(renderToStaticMarkup(createElement(FullTime, { value: '2026-11-07T10:00:00' })), /timezone missing or invalid/)
+  assert.deepEqual(orderedEvidence([{ id: 'naive', kind: 'log', timestamp: '2020-01-01T00:00:00' }, { id: 'known', kind: 'log', timestamp: '2026-11-07T00:00:00Z' }]).map(row => row.id), ['known', 'naive'])
+})
+
 test('authentication links require explicit action and keep tokens out of rendered markup', async () => {
   const { AccountPage, parseAuthenticationLink } = await components('src/account.tsx')
   const token = 'token_'.repeat(7)
@@ -55,52 +95,48 @@ test('account access offers password visibility, registration and a dedicated ve
 })
 
 test('demo reports expose saved sources without supplement creation', async () => {
-  const { ReportView } = await components('src/App.tsx')
+  const { ReportView } = await components('src/assessments.tsx')
   const html = renderToStaticMarkup(createElement(ReportView, { investigation: investigationFixture, readOnly: true, onOpen() {} }))
-  assert.match(html, /Recorded tool activity|Evidence timeline/)
+  assert.match(html, /Open log workspace/)
   assert.match(html, /Reported hypotheses/)
   assert.doesNotMatch(html, /Analyze further|Retry further analysis/)
 })
 
-test('demo cards show twelve substantial recorded cases and real counts', async () => {
+test('demo cards show the supplied published count and durable links', async () => {
   const { CaseCards } = await components('src/scenarios.tsx')
-  const cases = Array.from({ length: 12 }, (_, i) => ({ slug: String(i), title: 'Recorded case ' + i, description: 'Controlled execution', category: 'Deployment', recorded_at: '2026-11-03T00:00:00Z', counts: { log: 501, span: 40, metric: 12 } }))
+  const cases = Array.from({ length: 6 }, (_, i) => ({ slug: String(i), title: 'Recorded case ' + i, description: 'Controlled execution', category: 'Deployment', recorded_at: '2026-11-03T00:00:00Z', counts: { log: 501, span: 40, metric: 12 } }))
   const html = renderToStaticMarkup(createElement(CaseCards, { cases, onSelect() {} }))
-  assert.equal((html.match(/class="case-card"/g) || []).length, 12)
-  assert.equal((html.match(/501 logs/g) || []).length, 12)
+  assert.equal((html.match(/class="case-card"/g) || []).length, 6)
+  assert.equal((html.match(/501 logs/g) || []).length, 6)
   assert.doesNotMatch(html, /Run scenario|Investigate|Analyze further/)
 })
 
 test('Jev triage stays advisory and separate from the assessed cause and Groq usage', async () => {
-  const { ReportView } = await components('src/App.tsx')
+  const { ReportView } = await components('src/assessments.tsx')
   const triage = { requested: true, state: 'completed', category: 'resource_exhaustion', confidence: .6,
     probabilities: { resource_exhaustion: .7, latency_timeout: .3 }, requests: 1,
     returned_model: 'typesafe/jev-1.14', actual_usage: { input_tokens: 123, output_tokens: 45 },
     groups: [{ id: 'g0', source_ids: ['source-a'], score: 1.5 }] }
   const investigation = { ...investigationFixture, usage: { ...investigationFixture.usage, triage } }
   const html = renderToStaticMarkup(createElement(ReportView, { investigation, onOpen() {} }))
-  assert.match(html, /Possible cause — limited evidence/)
-  assert.match(html, /Initial triage · Resource exhaustion/)
+  assert.match(html, /inconclusive/)
+  assert.match(html, /Evidence review · Resource exhaustion/)
   assert.match(html, /not a root-cause finding/)
-  assert.match(html, /Groq can disagree/)
-  assert.match(html, /Input tokens: 123/)
-  assert.match(html, /Original usage: 2 HTTP attempts/)
-  assert.match(html, /Priority 1.50 \/ 2/)
-  assert.doesNotMatch(html, /Initial triage[^>]*open=/)
+  assert.match(html, /The assessment can disagree/)
+  assert.doesNotMatch(html, /Input tokens|HTTP attempts|Priority 1.50/)
+  assert.doesNotMatch(html, /<details[^>]*open=/)
 })
 
 test('triage pending, fallback, unknown and missing usage have truthful display', async () => {
-  const { TriagePanel, WorkflowLabel } = await components('src/triage.tsx')
+  const { TriagePanel } = await components('src/triage.tsx')
   for (const state of ['pending', 'running', 'fallback', 'interrupted']) {
     const html = renderToStaticMarkup(createElement(TriagePanel, { triage: { requested: true, state, reason: 'Provider unavailable' }, onOpen() {} }))
-    assert.match(html, state === 'fallback' ? /Groq-only fallback/ : /Initial triage/)
+    assert.match(html, state === 'fallback' ? /Groq-only fallback/ : /Evidence review/)
     assert.doesNotMatch(html, /Assessed cause/)
   }
   const html = renderToStaticMarkup(createElement(TriagePanel, { triage: { requested: true, state: 'completed', category: 'no_clear_failure', probabilities: {}, groups: [] }, onOpen() {} }))
   assert.match(html, /does not establish application health/)
-  assert.match(html, /Input tokens: not returned/)
-  assert.match(renderToStaticMarkup(createElement(WorkflowLabel, { providers: { groq: false, jev: true } })), /Full investigation unavailable/)
-  assert.match(renderToStaticMarkup(createElement(WorkflowLabel, { providers: { groq: true, jev: true } })), /Jev triage → Groq investigation/)
+  assert.doesNotMatch(html, /Input tokens/)
 })
 
 test('source previews show actual observations, missing timestamps and unavailable sources', async () => {
@@ -114,62 +150,43 @@ test('source previews show actual observations, missing timestamps and unavailab
 })
 
 test('saved reports expose individual hypotheses, neutral assessment, timeline and explicit further analysis', async () => {
-  const { ReportView } = await components('src/App.tsx')
+  const { ReportView } = await components('src/assessments.tsx')
   const html = renderToStaticMarkup(createElement(ReportView, { investigation: investigationFixture, onOpen() {} }))
-  assert.match(html, /Possible cause — limited evidence/)
+  assert.match(html, /inconclusive/)
   assert.doesNotMatch(html, /failure originates/)
   assert.match(html, /Processing may be delayed/)
   assert.match(html, /Open evidence source-b/)
-  assert.match(html, /Evidence timeline/)
+  assert.match(html, /Open log workspace/)
   assert.match(html, /Analyze further/)
-  assert.match(html, /Original usage: 2 HTTP attempts/)
+  assert.doesNotMatch(html, /Original usage: 2 HTTP attempts/)
   assert.match(html, /2026-11-02T00:00:09Z/)
   const rules = renderToStaticMarkup(createElement(ReportView, { investigation: { ...investigationFixture, engine: 'rules' }, onOpen() {} }))
   assert.match(rules, /Reported hypotheses/)
   assert.doesNotMatch(rules, /Analyze further/)
 })
 
-test('timeline deduplicates by ID, orders span starts and reveals missing relationships and legacy coverage', async () => {
-  const { orderedEvidence, EvidenceTimeline, traceCoverage } = await components('src/reports.tsx')
-  const late = { id: 'late', kind: 'span', service: 'payment', name: 'payment.process', duration_ms: 4000, status: 'ok', timestamp: '2026-11-02T00:00:04Z', started_at: '2026-11-02T00:00:00Z', trace_id: 'trace', span_id: 'work', parent_id: 'missing' }
-  const log = { id: 'timeout', kind: 'log', service: 'order', message: 'Timed out', timestamp: '2026-11-02T00:00:02Z' }
+test('chronological ordering keeps source identity and missing trace relationships honest', async () => {
+  const { orderedEvidence, traceCoverage } = await components('src/reports.tsx')
+  const late = { id: 'late', kind: 'span', service: 'billing', name: 'authorize', timestamp: '2026-11-02T00:00:04Z', started_at: '2026-11-02T00:00:00Z', trace_id: 'trace', span_id: 'work', parent_id: 'missing' }
+  const log = { id: 'timeout', kind: 'log', service: 'gateway', timestamp: '2026-11-02T00:00:02Z' }
   assert.deepEqual(orderedEvidence([log, late, late]).map(row => row.id), ['late', 'timeout'])
   assert.match(traceCoverage(late, [late, log]), /Parent span is not/)
-  const scope = { investigation_id: 'saved', evidence: [log, late, late], source_ids: ['late', 'timeout', 'unavailable'], unavailable_source_ids: ['unavailable'], coverage: 'legacy_citations_only', note: 'Legacy report: only cited sources.' }
-  const html = renderToStaticMarkup(createElement(EvidenceTimeline, { scope, onOpen() {} }))
-  assert.match(html, /Legacy report/)
-  assert.match(html, /saved sources unavailable/)
-  assert.match(html, /Duration 4000.00 ms/)
-  assert.match(html, /Completed/)
-  assert.match(html, /Chronology alone does not establish causation/)
-  assert.match(html, /Trace or span reference missing/)
-  assert.equal((html.match(/payment.process/g) || []).length, 1)
-  assert.ok(html.indexOf('payment.process') < html.indexOf('Timed out'))
-})
 
-test('service map preserves Payment origin despite late successful work and current recovery', async () => {
-  const { ServiceMap } = await components('src/App.tsx')
-  const html = renderToStaticMarkup(createElement(ServiceMap, { report: { ...reportFixture, assessment: 'supported' }, overview: { services: ['payment', 'order', 'gateway'].map(name => ({ name, status: 'healthy' })) }, evidence: [{ id: 'late', service: 'payment', kind: 'span', status: 'ok', duration_ms: 4000 }] }))
-  assert.match(html, /Reported origin: yes/)
-  assert.match(html, /Reported affected: not listed/)
-  assert.match(html, /Observed errors: 0 in this evidence scope/)
-  assert.match(html, /Current reachability: reachable/)
-  assert.doesNotMatch(html, /unaffected/)
 })
 
 test('all supplement states leave original report readable and display disagreement and separate usage', async () => {
-  const { ReportView } = await components('src/App.tsx')
+  const { ReportView } = await components('src/assessments.tsx')
   for (const state of ['queued', 'running', 'quota_waiting', 'completed', 'failed', 'interrupted']) {
     const supplement = { id: 'supplement', investigation_id: 'saved', state, created_at: '2026-11-02T00:01:00Z', source_ids: ['source-a'], error: 'Retryable test failure.',
       usage: { requests: 1, total_tokens: 50, retry_at: new Date(Date.now() + 15000).toISOString() },
       result: state === 'completed' ? { relationship: 'disagrees', summary: 'The original conclusion is unsupported.', explanations: [{ claim: 'Delay remains unresolved.', status: 'unresolved', supporting_citations: [], conflicting_citations: ['source-a'] }], questions: [], limitations: ['No new evidence.'] } : null }
     const html = renderToStaticMarkup(createElement(ReportView, { investigation: { ...investigationFixture, supplements: [supplement] }, onOpen() {} }))
     assert.match(html, /The source is uncertain/)
-    assert.match(html, /Supplement usage: 1\/2 HTTP attempts/)
-    assert.match(html, /Original usage: 2 HTTP attempts/)
+    assert.doesNotMatch(html, /HTTP attempts/)
+    assert.doesNotMatch(html, /Original usage: 2 HTTP attempts/)
     assert.doesNotMatch(html, />Analyze further</)
-    if (state === 'completed') { assert.match(html, /Disagrees with the original conclusion/); assert.match(html, /disagreement/); assert.match(html, /Conflicting sources/) }
-    if (state === 'quota_waiting') assert.match(html, /Resuming in \d+s/)
+    if (state === 'completed') { assert.match(html, /disagrees/); assert.match(html, /Conflicting sources/) }
+    if (state === 'quota_waiting') assert.match(html, /resumes automatically/)
     if (['failed', 'interrupted'].includes(state)) assert.match(html, /Retry further analysis/)
   }
 })
@@ -184,7 +201,7 @@ test('observation inspection has readable measured fields and source punctuation
 })
 
 test('waiting and failed investigations retain activity, evidence and safe diagnostics', async () => {
-  const bundle = await build({ entryPoints: ['src/App.tsx'], bundle: true, write: false, format: 'cjs', platform: 'node', packages: 'external' })
+  const bundle = await build({ entryPoints: ['src/assessments.tsx'], bundle: true, write: false, format: 'cjs', platform: 'node', packages: 'external' })
   const output = { exports: {} }
   new Function('require', 'module', 'exports', bundle.outputFiles[0].text)(createRequire(import.meta.url), output, output.exports)
   const investigation = { id: 'fixture', engine: 'groq', state: 'quota_waiting', created_at: new Date().toISOString(), report: null,
@@ -193,16 +210,16 @@ test('waiting and failed investigations retain activity, evidence and safe diagn
       diagnostics: [{ attempt: 1, phase: 'tools', status: 429, input_bytes: 1234, estimated_input_tokens: 681 }] } }
   const render = value => renderToStaticMarkup(createElement(output.exports.ReportView, { investigation: value, onOpen() {} }))
   const waiting = render(investigation)
-  assert.match(waiting, /Waiting for Groq quota/)
-  assert.match(waiting, /Resuming in \d+s/)
+  assert.match(waiting, /Waiting for analysis capacity/)
+  assert.match(waiting, /Next attempt in \d+s/)
   assert.match(waiting, /resumes automatically/)
-  assert.match(waiting, /Open collected evidence ABC123/)
-  assert.match(waiting, /Completed tool activity/)
-  assert.match(waiting, /429/)
+  assert.match(waiting, /Open evidence abc123source/)
+  assert.match(waiting, /Evidence collected so far/)
+  assert.doesNotMatch(waiting, /429|Provider diagnostics/)
   const failed = render({ ...investigation, state: 'failed', error: 'Daily quota exhausted.' })
   assert.match(failed, /Daily quota exhausted/)
-  assert.match(failed, /Recorded tool activity/)
-  assert.match(failed, /Open collected evidence ABC123/)
+  assert.match(failed, /Evidence collected so far/)
+  assert.match(failed, /Open evidence abc123source/)
   assert.doesNotMatch(failed, /Resuming in/)
   assert.match(failed, /Retry creates a new investigation/)
 })
@@ -275,12 +292,7 @@ test('import form and coverage make explicit analysis and missing context clear'
   assert.match(coverage, /No spans were supplied. No metrics were supplied/)
 })
 
-test('imported service maps and timelines do not invent topology, reachability or timestamps', async () => {
-  const { ServiceMap } = await components('src/App.tsx')
-  const html = renderToStaticMarkup(createElement(ServiceMap, { overview: null, services: ['billing', 'catalog'], evidence: [] }))
-  assert.match(html, /billing/)
-  assert.match(html, /not measured in this evidence view/)
-  assert.doesNotMatch(html, /gateway|payment|class="connector"/)
+test('undated observations remain in source order without invented timestamps', async () => {
   const { orderedEvidence, FullTime } = await components('src/reports.tsx')
   const rows = [{ id: 'untimed-last', kind: 'log', timestamp: null, source_line: 6 },
     { id: 'dated', kind: 'log', timestamp: '2026-11-03T00:00:00Z', source_line: 5 },
@@ -344,3 +356,50 @@ test('Sentry coverage separates service identity, available spans and legacy sna
   assert.match(fields, /HTTP response status<\/dt><dd>422/)
 })
 
+
+test('tree placement centers parents and separates repeated calls, disconnected components and cycles', async () => {
+  const { treePositions } = await components('src/lib/flow-layout.ts')
+  const ids = ['root', 'left', 'right', 'leaf', 'orphan', 'cycle-a', 'cycle-b']
+  const edges = [{ source: 'root', target: 'left' }, { source: 'root', target: 'right' }, { source: 'left', target: 'leaf' }, { source: 'cycle-a', target: 'cycle-b' }, { source: 'cycle-b', target: 'cycle-a' }]
+  const original = JSON.stringify(edges)
+  const placed = treePositions(ids, edges)
+  assert.equal(placed.size, ids.length)
+  assert.equal(placed.get('root').x, (placed.get('left').x + placed.get('right').x) / 2)
+  assert.equal(placed.get('leaf').x, placed.get('left').x)
+  assert(placed.get('orphan').x > placed.get('right').x)
+  assert(placed.get('cycle-a').x > placed.get('orphan').x)
+  for (const [id, point] of placed) for (const [other, next] of placed) if (id !== other) assert(Math.abs(point.x - next.x) >= 248 || Math.abs(point.y - next.y) >= 178, `${id} overlaps ${other}`)
+  assert.deepEqual([...treePositions(ids, edges)], [...placed])
+  assert.equal(JSON.stringify(edges), original)
+  assert.equal(treePositions(Array.from({ length: 2000 }, (_, i) => String(i)), Array.from({ length: 1999 }, (_, i) => ({ source: String(i), target: String(i + 1) }))).size, 2000)
+})
+
+test('distribution totals, zero kinds, proportional services and omitted shares are exact', async () => {
+  const { observationDistribution, ObservationDistribution, ServiceBarChart } = await components('src/distribution.tsx')
+  const counts = { observations: 100, spans: 20, metrics: 5 }
+  assert.deepEqual(observationDistribution(counts).map(row => row.value), [75, 20, 5])
+  const chart = renderToStaticMarkup(createElement(ObservationDistribution, { counts }))
+  assert.match(chart, /75%/); assert.match(chart, /20%/); assert.match(chart, /5%/)
+  assert.match(renderToStaticMarkup(createElement(ObservationDistribution, { counts: { observations: 0, spans: 0, metrics: 0 } })), /No observations/)
+  const bars = renderToStaticMarkup(createElement(ServiceBarChart, { services: [{ service: 'api', observations: 30 }, { service: 'worker', observations: 15 }], total: 60, href: service => '#/' + service }))
+  assert.match(bars, /width:100%/); assert.match(bars, /width:50%/); assert.match(bars, /50% of saved/); assert.match(bars, /Other services/); assert.match(bars, /25%/)
+})
+
+test('timeline preserves undated records, precise timestamps, long content and source actions', async () => {
+  const { EvidenceTimeline } = await components('src/timeline.tsx')
+  const evidence = [{ id: 'first', kind: 'span', service: 'api', status: 'error', timestamp: '2026-11-07T10:00:00.123456Z', name: 'checkout', duration_ms: 4.25 }, { id: 'long', kind: 'log', service: 'api', level: 'error', timestamp: '2026-11-07T10:00:00.124Z', message: 'line content '.repeat(40) }, { id: 'unknown', kind: 'log', service: 'api', message: 'undated' }]
+  const html = renderToStaticMarkup(createElement(EvidenceTimeline, { data: { evidence, offset: 100, total: 203, unknown_timestamps: 1, next_offset: 200 }, selected: 'long', onSelect: () => {}, onPage: () => {} }))
+  assert.match(html, /first timed event on each page/); assert.match(html, /4.25 ms recorded/); assert.match(html, /No source timestamp/)
+  assert.match(html, /Expand message/); assert.match(html, /Inspect timeline observation long/); assert.match(html, /timeline-selected/); assert.match(html, /101.*103 of 203/)
+})
+
+test('precise source times and short-range ticks retain distinct labels', async () => {
+  const { sourceTime, chartTime } = await components('src/lib/time.ts')
+  assert.match(sourceTime('2026-11-07T10:00:00.123456Z'), /\.123456$/)
+  assert.notEqual(chartTime('2026-11-07T10:00:00.001Z', 1, 100), chartTime('2026-11-07T10:00:00.002Z', 1, 100))
+  assert.notEqual(chartTime('2026-11-07T10:00:01Z', 1000, 5000), chartTime('2026-11-07T10:00:02Z', 1000, 5000))
+  for (const name of ['logs', 'log-filters', 'timeline', 'dashboard']) {
+    const source = readFileSync('src/' + name + '.tsx', 'utf8')
+    assert(!/[\u00c2]|\u00e2[\u20ac\u2020]/.test(source), name + ' contains garbled punctuation')
+  }
+})

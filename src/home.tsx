@@ -1,5 +1,6 @@
 import { ArrowRight, ArrowUpRight, Cable, FileCheck2, FileText, GitBranch, History, Layers3, LockKeyhole, Play, Plus, Search } from 'lucide-react'
 import { Brand } from './components/common'
+import { FooterWordmark } from './components/brand-effects'
 import { Button } from './components/ui/button'
 import { FeatureCarousel } from './components/ui/feature-carousel'
 
@@ -53,6 +54,6 @@ export default function Home() {
       <DataUse />
       <section className="home-cta"><div><span className="eyebrow">YOUR NEXT INVESTIGATION</span><h2>Bring a failure<br /><span>worth investigating.</span></h2></div><div><Button asChild><a href="#/signup">Create account<ArrowRight size={15} /></a></Button><a className="text-link" href="#/demo-login">Start with a recorded demo<ArrowUpRight size={14} /></a></div></section>
     </main>
-    <footer className="home-footer"><div className="home-footer-top"><div className="home-footer-about"><Brand /><p>Follow the failure.<br />Keep the evidence close.</p><span><Layers3 size={13} />Built around saved evidence</span></div><nav aria-label="Explore"><span className="eyebrow">EXPLORE</span><button onClick={() => scrollToSection('features')}>Features</button><button onClick={() => scrollToSection('workflow')}>Workflow</button><a href="#/demo-login">Recorded demo</a></nav><nav aria-label="Account"><span className="eyebrow">ACCOUNT</span><a href="#/signup">Create account</a><a href="#/login">Sign in</a></nav><nav aria-label="Resources"><span className="eyebrow">RESOURCES</span><button onClick={() => scrollToSection('faq')}>FAQ</button><a href="#/privacy">Data use<ArrowUpRight size={12} /></a></nav></div><div className="home-footer-bottom"><span>TraceDesk · Evidence-led investigation.</span><span>From what happened to what comes next.</span></div><div className="home-wordmark" aria-hidden="true">TraceDesk</div></footer>
+    <footer className="home-footer"><div className="home-footer-top"><div className="home-footer-about"><Brand /><p>Follow the failure.<br />Keep the evidence close.</p><span><Layers3 size={13} />Built around saved evidence</span></div><nav aria-label="Explore"><span className="eyebrow">EXPLORE</span><button onClick={() => scrollToSection('features')}>Features</button><button onClick={() => scrollToSection('workflow')}>Workflow</button><a href="#/demo-login">Recorded demo</a></nav><nav aria-label="Account"><span className="eyebrow">ACCOUNT</span><a href="#/signup">Create account</a><a href="#/login">Sign in</a></nav><nav aria-label="Resources"><span className="eyebrow">RESOURCES</span><button onClick={() => scrollToSection('faq')}>FAQ</button><a href="#/privacy">Data use<ArrowUpRight size={12} /></a></nav></div><div className="home-footer-bottom"><span>TraceDesk · Evidence-led investigation.</span><span>From what happened to what comes next.</span></div><FooterWordmark /></footer>
   </div></div>
 }

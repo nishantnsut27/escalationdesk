@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Cable, ExternalLink, LoaderCircle, RefreshCw, Unplug, Download } from 'lucide-react'
 import { api, type SentryConnection, type SentryImport, type SentryWorkspace } from './api'
-import { PageHeading } from './components/common'
+import { PageHeading, LoadingState, StatusBadge, Spinner } from './components/common'
+import { CupLoader } from './components/ui/cup-loader'
+import { ProgressBar } from './components/ui/progress-bar'
 import { navigate } from './routes'
 import { poll } from './poll'
 import { FullTime } from './reports'
@@ -30,10 +32,10 @@ export function SentrySetup({ configured, publicUrl }: { configured: boolean; pu
 export function SentryImportCard({ item, busy, onAction, onOpen }: { item: SentryImport; busy: boolean; onAction: (action: string) => void; onOpen: () => void }) {
   const canWrite = useWritePermission()
   return <article className="sentry-import-card">
-    <div><strong>{item.parameters.title}</strong><span className="status-pill">{item.state.replaceAll('_', ' ')}</span></div>
+    <div><strong>{item.parameters.title}</strong><StatusBadge state={item.state} /></div>
     <p>{item.progress.observations || 0} observations retained / <FullTime value={item.created_at} /></p>
     {item.error && <p className="import-error" role="alert">{item.error}</p>}
-    {item.progress.message && <p role="status">{item.progress.message}</p>}
+    {active.includes(item.state) ? <div role="status">{item.state !== 'running' && <CupLoader />}<ProgressBar label={item.state === 'rate_limited' ? 'Waiting to retry import' : item.state === 'queued' ? 'Import queued' : 'Importing evidence'} description={<>{item.progress.message}{' · '}{item.progress.observations || 0} observations retained</>} isIndeterminate /></div> : item.progress.message && <p>{item.progress.message}</p>}
     {item.progress.retry_at && <p>Next retry: <FullTime value={new Date(item.progress.retry_at * 1000).toISOString()} /></p>}
     <div className="sentry-actions"><button className="button secondary" onClick={onOpen}>Review evidence</button>
       {active.includes(item.state) && <button className="button secondary" disabled={!canWrite || busy} onClick={() => onAction('cancel')}>Cancel import</button>}
@@ -104,11 +106,11 @@ export function ConnectionsWorkspace() {
   return <div className="connections-workspace"><PageHeading eyebrow="CONNECTIONS" title="Connections">Connect Sentry, select a time window and save the observations you need.</PageHeading>
     <SentrySetup configured={data?.configured || false} publicUrl={data?.public_url || ''} />
     {error && <p className="import-error" role="alert">{error}</p>}
-    {!data && !error && <p role="status">Loading Sentry connections...</p>}
+    {!data && !error && <LoadingState>Loading Sentry connections…</LoadingState>}
     <section className="import-panel"><div className="sentry-actions"><label>Region for new authorization<select value={region} onChange={e => setRegion(e.target.value)} disabled={busy}><option value="us">United States</option><option value="eu">European Union</option></select></label><button className="button primary" onClick={() => void connect()} disabled={!canWrite || busy || !data?.configured}>{busy ? <LoaderCircle size={16} className="spin" /> : <Cable size={16} />}Connect Sentry</button></div>
       {data && !data.connections.length && <p>No Sentry connections yet. Choose the region shown in your Sentry organization settings, then authorize access.</p>}
       {!!data?.connections.length && <label>Connection<select value={selected} onChange={e => setSelected(e.target.value)}>{data.connections.map(c => <option key={c.id} value={c.id}>{c.organization} / {c.region.toUpperCase()} / {c.state}</option>)}</select></label>}
-      {current && <><div className="section-heading"><h2>{current.organization}</h2><span>{current.state.replaceAll('_', ' ')}</span></div>
+      {current && <><div className="section-heading"><h2>{current.organization}</h2><StatusBadge state={current.state} /></div>
         <ConnectionRegion region={current.region} />
         {current.error && <p className="import-error">{current.error}</p>}
         {current.checked_at && <p>Last checked <FullTime value={current.checked_at} /></p>}

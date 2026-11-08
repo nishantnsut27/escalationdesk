@@ -5,6 +5,7 @@ import { AccountPage, parseAuthenticationLink, VerifyAccountPage, WritePermissio
 import { Auth } from './auth'
 import Home, { DataUse } from './home'
 import { Brand, EmptyState, ErrorState, LoadingState } from './components/common'
+import { useLoadingMotion } from './components/loading'
 import { useRoute, navigate, destinationAfterAuth, isProtectedRoute } from './routes'
 
 const Dashboard = lazy(() => import('./dashboard').then(module => ({ default: module.Dashboard })))
@@ -25,6 +26,7 @@ function clearDestination() { try { sessionStorage.removeItem(destinationKey) } 
 function replaceHash(hash: string) { history.replaceState(null, '', hash); window.dispatchEvent(new HashChangeEvent('hashchange')) }
 
 export default function App() {
+  useLoadingMotion()
   const route = useRoute()
   const [user, setUser] = useState<User | null>(null), [initializing, setInitializing] = useState(true)
   const [error, setError] = useState(''), [mobileNav, setMobileNav] = useState(false)
@@ -110,8 +112,8 @@ export default function App() {
   }} />
   if (route.page === 'privacy') return <div className="public-detail"><Brand /><DataUse /><a className="text-link" href={user ? '#/dashboard' : '#/'}>Return to {user ? 'workspace' : 'TraceDesk'}</a></div>
   if (!route.page) return <Home />
-  if (initializing) return <div className="initializing"><Brand /><LoadingState>Opening your workspace…</LoadingState></div>
-  if (!user) return <>{error && <div className="auth-notice"><ErrorState error={error} /></div>}<Auth key={route.page} mode={route.page === 'demo' ? 'demo-login' : route.page} onSession={acceptSession} /></>
+  if (initializing) return <div className="initializing"><Brand /><LoadingState cup>Opening your workspace…</LoadingState></div>
+  if (!user) return <>{error && <div className="auth-notice"><ErrorState error={error} /></div>}<Auth mode={route.page === 'demo' ? 'demo-login' : route.page} onSession={acceptSession} /></>
   if (!user.read_only && !user.email_verified) return <VerifyAccountPage user={user} onRefresh={refreshSession} onLogout={logout} error={error} />
 
   const nav = [
@@ -151,6 +153,6 @@ export default function App() {
       {user.read_only && <a className={'demo-nav' + (route.page === 'demo' ? ' active' : '')} href="#/demo"><Layers3 size={17} />Recorded demo gallery</a>}
       <div className="sidebar-bottom"><div className="snapshot-note"><ShieldCheck size={16} /><p>{user.read_only ? 'Reviewed recordings. Browsing does not start analysis.' : 'Saved snapshots. Investigate when you are ready.'}</p></div><div className="user-row"><span className="avatar">{user.name.charAt(0).toUpperCase()}</span><div><strong>{user.name}</strong><span>{user.email}</span></div><button className="icon-button" aria-label="Sign out" onClick={() => void logout()}><LogOut size={16} /></button></div></div>
     </aside><div className="main-shell" inert={mobileNav}><header className="topbar"><div><button className="icon-button mobile-only" aria-label="Open navigation" aria-expanded={mobileNav} aria-controls="workspace-navigation" onClick={() => setMobileNav(!mobileNav)}><Menu size={20} /></button><span>Workspace</span><ChevronRight size={13} /><strong>{title}</strong></div><span className="connection-pill"><i />{user.read_only ? 'Recorded demonstration' : 'Saved evidence'}</span></header>
-      <main ref={main} id="main-content" tabIndex={-1} key={user.id}>{error && <div className="global-error"><ErrorState error={error} /><button className="icon-button" aria-label="Dismiss message" onClick={() => setError('')}><X size={16} /></button></div>}<Suspense fallback={<LoadingState />}>{content}</Suspense><footer className="page-footer"><span>saved snapshots / manual investigation</span><a href="#/privacy">Data use</a></footer></main>
+      <main ref={main} id="main-content" tabIndex={-1} key={user.id}>{error && <div className="global-error"><ErrorState error={error} /><button className="icon-button" aria-label="Dismiss message" onClick={() => setError('')}><X size={16} /></button></div>}<Suspense fallback={<LoadingState layout={route.page === 'dashboard' ? 'dashboard' : route.page === 'errors' ? 'errors' : route.page === 'collections' ? route.id ? 'collection' : 'cards' : route.page === 'demo' ? 'demo' : route.page === 'investigations' && !route.id ? 'investigations' : 'detail'} />}>{content}</Suspense><footer className="page-footer"><span>saved snapshots / manual investigation</span><a href="#/privacy">Data use</a></footer></main>
     </div></div></WritePermission.Provider>
 }

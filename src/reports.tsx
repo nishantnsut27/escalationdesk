@@ -2,10 +2,13 @@ import { createContext, useContext, useEffect, useState } from 'react'
 import { ArrowUpRight, RotateCcw } from 'lucide-react'
 import { api, userMessage, type Evidence, type Investigation, type ReportEvidence, type Supplement } from './api'
 import { logHref } from './routes'
-import { Button } from './components/ui/button'
+import { AnalysisActionButton } from './components/analysis-action'
 import { Notice, Spinner, StatusBadge } from './components/common'
 import { useWritePermission } from './account'
 import { sourceDate } from './lib/time'
+import { CupLoader } from './components/ui/cup-loader'
+import { ProgressBar } from './components/ui/progress-bar'
+import { Badge } from './components/ui/badge'
 
 export function FullTime({ value }: { value: string | null | undefined }) {
   const date = sourceDate(value)
@@ -47,7 +50,10 @@ export function ObservationFields({ row }: { row: Evidence }) {
 export function SupplementResult({ supplement }: { supplement: Supplement; onOpen?: (id: string) => void }) {
   const parentScope = useContext(EvidenceLinks)
   const result = supplement.result
-  if (!result) return <Notice kind={['failed','interrupted'].includes(supplement.state) ? 'error' : 'info'}>{supplement.state === 'failed' ? userMessage(supplement.error, 'Further analysis failed. Retry explicitly.') : supplement.state === 'interrupted' ? 'Further analysis was interrupted. Retry explicitly to create a new saved attempt.' : supplement.state === 'quota_waiting' ? 'Waiting for analysis capacity. This attempt resumes automatically within its allowance.' : 'Reviewing the saved assessment…'}</Notice>
+  if (!result) {
+    if (['queued', 'running', 'quota_waiting'].includes(supplement.state)) return <div className="supplement-progress" role="status">{supplement.state !== 'running' && <CupLoader />}<ProgressBar label={supplement.state === 'quota_waiting' ? 'Waiting for analysis capacity' : 'Reviewing the saved assessment…'} description={<>{supplement.usage.progress || (supplement.state === 'quota_waiting' ? 'This attempt resumes automatically within its allowance.' : 'Reviewing the original saved evidence.')} · {supplement.source_ids.length} saved sources{supplement.usage.retry_at && <> · Next retry: <FullTime value={supplement.usage.retry_at} /></>}</>} isIndeterminate /></div>
+    return <Notice kind={['failed','interrupted'].includes(supplement.state) ? 'error' : 'info'}>{supplement.state === 'failed' ? userMessage(supplement.error, 'Further analysis failed. Retry explicitly.') : supplement.state === 'interrupted' ? 'Further analysis was interrupted. Retry explicitly to create a new saved attempt.' : 'No saved further assessment is available.'}</Notice>
+  }
   return <EvidenceLinks.Provider value={{ ...parentScope, investigation: supplement.investigation_id, supplement: supplement.id }}><article className="supplement-result"><div className="report-section-heading"><h3>Further analysis</h3><StatusBadge state={result.relationship} /></div><p>{result.summary}</p>{result.explanations.map((item, index) => <div key={index} className="finding"><p>{item.claim}</p><span className="badge neutral">{item.status}</span><Citations ids={item.supporting_citations} label="Supporting sources" />{!!item.conflicting_citations.length && <Citations ids={item.conflicting_citations} label="Conflicting sources" />}</div>)}{!!result.questions.length && <><h4>Next questions</h4><ul>{result.questions.map((item, index) => <li key={index}><strong>{item.question}</strong><p>{item.suggested_check}</p></li>)}</ul></>}{!!result.limitations.length && <><h4>Limitations</h4><ul>{result.limitations.map((item, index) => <li key={index}>{item}</li>)}</ul></>}<p className="report-note">Saved <FullTime value={supplement.completed_at} />. Uses the original saved evidence.</p></article></EvidenceLinks.Provider>
 }
 export function SupplementPanel({ investigation, onUpdate }: { investigation: Investigation; onOpen?: (id: string) => void; onUpdate?: (value: Investigation) => void }) {
@@ -70,5 +76,5 @@ export function SupplementPanel({ investigation, onUpdate }: { investigation: In
     try { const value = await api<Supplement>('/investigations/' + investigation.id + '/supplements', retry ? { retry: true } : {}); onUpdate?.({ ...investigation, supplements: [...supplements.filter(item => item.id !== value.id), value] }) }
     catch (e) { setError(userMessage(e)) } finally { setBusy(false) }
   }
-  return <section className="supplement-panel"><div><h3>Take another look</h3><p>Review this assessment against its saved evidence. New evidence needs a new investigation.</p></div>{(!latest || retry) && <Button variant="secondary" disabled={!canWrite || busy} onClick={analyze}>{busy ? <Spinner /> : <RotateCcw size={14} />}{retry ? 'Retry further analysis' : 'Analyze further'}</Button>}{error && <Notice kind="error">{error}</Notice>}{latest && <SupplementResult supplement={latest} />}{supplements.length > 1 && <details><summary>Previous review attempts ({supplements.length - 1})</summary>{supplements.slice(0, -1).map(item => <SupplementResult key={item.id} supplement={item} />)}</details>}</section>
+  return <section className="supplement-panel"><div><h3>Take another look</h3><p>Review this assessment against its saved evidence. New evidence needs a new investigation.</p></div>{(!latest || retry) && <AnalysisActionButton busy={busy} disabled={!canWrite || busy} onClick={analyze}>{busy ? <Spinner /> : <RotateCcw size={14} />}{retry ? 'Retry further analysis' : 'Analyze further'}</AnalysisActionButton>}{error && <Notice kind="error">{error}</Notice>}{latest && <SupplementResult supplement={latest} />}{supplements.length > 1 && <details><summary>Previous review attempts ({supplements.length - 1})</summary>{supplements.slice(0, -1).map(item => <SupplementResult key={item.id} supplement={item} />)}</details>}</section>
 }

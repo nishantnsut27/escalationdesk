@@ -1,0 +1,67 @@
+/* App adapters for the Originkit effects. */
+html:has(.auth-page) { scrollbar-width: thin; scrollbar-color: var(--muted-foreground) transparent; }
+html:has(.auth-page)::-webkit-scrollbar { width: 8px; }
+html:has(.auth-page)::-webkit-scrollbar-track { background: transparent; }
+html:has(.auth-page)::-webkit-scrollbar-thumb { background: var(--muted-foreground); border: 2px solid transparent; background-clip: padding-box; border-radius: 999px; }
+.home-wordmark.effect-wordmark { position: relative; height: clamp(100px, 23vw, 310px); display: grid; place-items: center; color: var(--foreground); -webkit-text-stroke: 0; }
+.wordmark-static { font-size: clamp(44px, 15.5vw, 218px); }
+.wordmark-live { position: absolute; inset: 0; }
+/* One mask belongs to the page, shared by poster, retained frame and live art. */
+.auth-page-art { position: relative; isolation: isolate; background: var(--background); }
+/* Viewport units keep the canvas stable when a longer form adds a scrollbar. */
+.auth-page-art > .auth-artwork { position: fixed; inset: 0; width: 100vw; height: 100dvh; z-index: -1; pointer-events: none; mask-image: linear-gradient(to right, var(--background) 30%, transparent 70%); }
+.auth-story.auth-story-art { position: relative; padding: 44px 10%; border: 0; background: transparent; }
+.auth-page-art > .auth-form-side { background: transparent; }
+/* Keep each auth form within the viewport by reducing spacing, not clipping content. */
+.auth-page-art .auth-form-side { padding-block: clamp(12px, 3dvh, 32px); }
+.auth-page-art .auth-form-side > .back-link { margin-bottom: 8px; }
+.auth-page-art .auth-form-wrap { padding-block: clamp(12px, 2dvh, 24px); }
+.auth-page-art .auth-form-wrap h1 { font-size: clamp(24px, 2.2vw, 30px); margin: 8px 0 10px; }
+.auth-page-art .auth-form-wrap > p { line-height: 1.5; }
+.auth-page-art .auth-tabs { margin: 18px 0; }
+.auth-page-art .auth-tabs a { padding-block: 8px; }
+.auth-page-art .auth-form-wrap form { gap: 14px; }
+.auth-page-art .auth-form-wrap form > .button { margin-top: 2px; }
+.auth-page-art .forgot-link { margin: 12px 0 0; min-height: 24px; }
+.auth-page-art .auth-form-wrap .auth-privacy { margin: 16px 0 4px; }
+.auth-page-art .auth-form-wrap > .text-link { min-height: 24px; }
+.auth-artwork-poster, .auth-artwork-retained, .auth-artwork-live { display: block; position: absolute; inset: 0; width: 100%; height: 100%; }
+.auth-artwork-poster { object-fit: cover; }
+.auth-artwork-retained { visibility: hidden; }
+.auth-artwork-retained[data-painted] { visibility: visible; }
+.auth-artwork-live { opacity: 0; }
+.auth-artwork-live[data-painted] { opacity: 1; }
+.auth-story-art > .brand { position: relative; align-self: flex-start; background: var(--background); border-radius: var(--radius); padding: 8px; margin: -8px; }
+
+.analysis-action, .analysis-spider { position: relative; display: inline-flex; vertical-align: middle; flex-shrink: 0; max-width: 100%; }
+.analysis-size, .analysis-label { display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; font: 550 13px/1.25 var(--font-sans); }
+.analysis-size { visibility: hidden; height: 42px; padding-inline: 24px; }
+.analysis-native { height: 42px; min-height: 42px; border-radius: 999px; padding: 0 23px; white-space: nowrap; }
+.analysis-stage { position: absolute; pointer-events: none; z-index: 3; }
+.analysis-stage .spider-pill { pointer-events: auto; display: inline-flex; align-items: center; justify-content: center; text-shadow: none !important; }
+.analysis-stage .spider-pill:focus-visible { outline: 2px solid var(--ring) !important; outline-offset: 3px !important; }
+.analysis-stage .spider-pill:disabled { background: var(--background) !important; border: 1px dashed var(--border) !important; cursor: not-allowed !important; }
+.analysis-spider[data-disabled] canvas { visibility: hidden; }
+.analysis-label svg, .analysis-size svg { flex: 0 0 auto; }
+.analysis-label { pointer-events: none; }
+
+@media (max-width: 760px) {
+  .auth-story.auth-story-art { padding: 16px 24px 8px; }
+  .auth-page-art > .auth-artwork { display: none; }
+  .auth-story-art > .brand { padding: 0; margin: 0; }
+}
+@media (max-height: 740px) {
+  .auth-page-art .auth-form-side { padding-block: 12px; }
+  .auth-page-art .auth-form-wrap { padding-block: 8px; }
+  .auth-page-art .auth-tabs { margin-block: 12px; }
+  .auth-page-art .auth-form-wrap form { gap: 10px; }
+  .auth-page-art .auth-form-wrap .auth-privacy { margin-top: 12px; }
+}
+@media (max-height: 660px) {
+  .auth-page-art .auth-form-side { padding-block: 8px; }
+  .auth-page-art .auth-form-side > .back-link { margin-bottom: 4px; }
+  .auth-page-art .auth-form-wrap h1 { margin-block: 6px 8px; }
+  .auth-page-art .auth-tabs { margin-block: 10px; }
+  .auth-page-art .auth-form-wrap form { gap: 8px; }
+  .auth-page-art .auth-form-wrap .auth-privacy { margin-top: 8px; }
+}

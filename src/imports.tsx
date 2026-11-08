@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { FileText, LoaderCircle, Upload } from 'lucide-react'
+import { FileText, Upload } from 'lucide-react'
 import { api, ApiError, type Collection } from './api'
 import { FullTime } from './reports'
-import { PageHeading, Notice } from './components/common'
+import { PageHeading, Notice, Spinner } from './components/common'
+import { ProgressBar } from './components/ui/progress-bar'
 import { navigate } from './routes'
 import { useWritePermission } from './account'
 
@@ -58,7 +59,7 @@ export function ImportForm({ onImported, onError }: { onImported: (value: Collec
       <label>What did you observe? (optional)<textarea value={symptom} onChange={e => setSymptom(e.target.value)} maxLength={2000} rows={2} placeholder="For example: sign-in requests started returning 500." disabled={busy} /></label>
       <p className="report-note">Up to 1 MiB, 5,000 observations and 32 services per import. UTF-8 text only. Common credentials are redacted; review saved content before sending excerpts for analysis. Importing does not start analysis.</p>
       {error && <p className="import-error" role="alert">{error}</p>}
-      <button className="button primary" disabled={!canWrite || busy || !content.trim()}>{busy ? <LoaderCircle size={16} className="spin" /> : <Upload size={16} />}{busy ? 'Importing...' : 'Save logs'}</button>
+      <button className="button primary" aria-busy={busy || undefined} disabled={!canWrite || busy || !content.trim()}>{busy ? <Spinner /> : <Upload size={16} />}Save logs</button>{busy && <ProgressBar label="Importing application logs" description="Saving and normalizing the supplied log text." isIndeterminate />}
     </form>
   </section>
 }

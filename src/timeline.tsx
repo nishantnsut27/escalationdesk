@@ -39,7 +39,7 @@ export function EvidenceTimeline({ data, selected, onSelect, onPage }: {
       {data && <span>{data.unknown_timestamps.toLocaleString()} undated in this scope</span>}
     </div>
     <p className="context-note">Source time order. Offsets start at the first timed event on each page. Undated records follow; order alone does not establish causation.</p>
-    {!data ? <LoadingState>Loading timeline observations…</LoadingState> : !data.evidence.length ? <EmptyState title="No events in this timeline">Clear a filter or widen the source time range.</EmptyState> : <>
+    {!data ? <LoadingState layout="timeline">Loading timeline observations…</LoadingState> : !data.evidence.length ? <EmptyState title="No events in this timeline">Clear a filter or widen the source time range.</EmptyState> : <>
       <div className="timeline-scroll" ref={scroll} role="region" aria-label="Chronological observations" tabIndex={0}><TimelineRows rows={data.evidence} selected={selected} onSelect={onSelect} /></div>
       <div className="timeline-pagination">
         <span role="status">{data.offset + 1}–{data.offset + data.evidence.length} of {data.total.toLocaleString()}</span>

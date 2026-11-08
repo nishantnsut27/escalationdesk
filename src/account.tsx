@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useId, useState, type FormEvent, type InputHTMLAttributes } from 'react'
 import { ArrowLeft, Eye, EyeOff, LoaderCircle, Mail, ShieldCheck } from 'lucide-react'
 import { api, type User } from './api'
+import { Spinner } from './components/common'
 
 export type AuthenticationLink = { purpose: 'verify' | 'reset'; token: string }
 export const WritePermission = createContext(false)
@@ -50,7 +51,7 @@ export function AccountPage({ link, invalid = false, onExit, onVerified, onReset
       {!link && <label>Email address<input name="email" type="email" autoComplete="email" required maxLength={200} disabled={busy} /></label>}
       {link?.purpose === 'reset' && <><PasswordField label="New password" name="password" autoComplete="new-password" minLength={10} maxLength={128} required disabled={busy} /><PasswordField label="Confirm new password" name="confirm" autoComplete="new-password" minLength={10} maxLength={128} required disabled={busy} /><p className="account-help">Choose a password different from your current one. The link is checked when you submit; used or expired links cannot change your password.</p></>}
       {error && <p className="error-banner" role="alert">{error}</p>}
-      <button className="button primary full" disabled={busy}>{busy ? <LoaderCircle size={16} className="spin" /> : verify ? <ShieldCheck size={16} /> : <Mail size={16} />}{verify ? 'Confirm email address' : link ? 'Change password' : 'Send reset link'}</button>
+      <button className="button primary full" aria-busy={busy || undefined} disabled={busy}>{busy ? <LoaderCircle size={16} className="spin" /> : verify ? <ShieldCheck size={16} /> : <Mail size={16} />}{verify ? 'Confirm email address' : link ? 'Change password' : 'Send reset link'}</button>
     </form>)}
     {!done && <button className="button account-back" disabled={busy} onClick={onExit}><ArrowLeft size={16} />Return to sign in</button>}
     {!link && !invalid && onRegister && <div className="account-register"><p>New to TraceDesk? Create an account first. Password recovery is for existing accounts.</p><button className="button" disabled={busy} onClick={onRegister}>Create account</button></div>}
@@ -59,6 +60,7 @@ export function AccountPage({ link, invalid = false, onExit, onVerified, onReset
 
 export function VerificationBanner({ user, onRefresh }: { user: User; onRefresh: () => Promise<void> }) {
   const [busy, setBusy] = useState(false)
+  const [pendingAction, setPendingAction] = useState<'request' | 'refresh' | null>(null)
   const [remaining, setRemaining] = useState(0)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
@@ -69,18 +71,18 @@ export function VerificationBanner({ user, onRefresh }: { user: User; onRefresh:
   }, [remaining])
   if (user.read_only || user.email_verified) return null
   async function request() {
-    setBusy(true); setError('')
+    setBusy(true); setPendingAction('request'); setError('')
     try { const result = await api<{ message: string }>('/auth/verification-request',{}); setMessage(result.message); setRemaining(60) }
     catch(e) { setError(e instanceof Error ? e.message : 'Unable to request verification.') }
     finally { setBusy(false) }
   }
   async function refresh() {
-    setBusy(true); setError('')
+    setBusy(true); setPendingAction('refresh'); setError('')
     try { await onRefresh(); setMessage('Status checked. If this screen remains, open your newest verification email and confirm your address.') }
     catch(e) { setError(e instanceof Error ? e.message : 'Unable to refresh verification.') }
     finally { setBusy(false) }
   }
-  return <section className="verification-banner" aria-label="Email verification"><div><strong>Verify {user.email}</strong><p>Your saved history is retained. Verify your email to enter your workspace.</p>{message && <p role="status">{message}</p>}{error && <p role="alert">{error}</p>}</div><div className="account-actions"><button className="button" disabled={busy || remaining > 0} onClick={request}>{remaining ? `Resend in ${remaining}s` : 'Send verification email'}</button><button className="button" disabled={busy} onClick={refresh}>Check verification</button></div></section>
+  return <section className="verification-banner" aria-label="Email verification"><div><strong>Verify {user.email}</strong><p>Your saved history is retained. Verify your email to enter your workspace.</p>{message && <p role="status">{message}</p>}{error && <p role="alert">{error}</p>}</div><div className="account-actions"><button className="button" aria-busy={busy && pendingAction === 'request' || undefined} disabled={busy || remaining > 0} onClick={request}><span className="inline-spinner">{busy && pendingAction === 'request' && <Spinner />}</span>{remaining ? `Resend in ${remaining}s` : 'Send verification email'}</button><button className="button" aria-busy={busy && pendingAction === 'refresh' || undefined} disabled={busy} onClick={refresh}><span className="inline-spinner">{busy && pendingAction === 'refresh' && <Spinner />}</span>Check verification</button></div></section>
 }
 
 export function VerifyAccountPage({ user, onRefresh, onLogout, error }: { user: User; onRefresh: () => Promise<void>; onLogout: () => Promise<void>; error?: string }) {
