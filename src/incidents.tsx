@@ -21,8 +21,11 @@ export function AutomationControls({ connection }: { connection: SentryConnectio
   const [draft, setDraft] = useState<Settings | null>(null), [busy, setBusy] = useState(false), [message, setMessage] = useState(''), [failure, setFailure] = useState('')
   useEffect(() => { if (value) setDraft(value) }, [value])
   async function save(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setFailure(''); setMessage('')
-    try { setDraft(await api<Settings>(`/connections/sentry/${connection.id}/automation`, draft, 'PUT')); setMessage('Automation settings saved.') }
+    event.preventDefault()
+    if (!draft) return
+    setBusy(true); setFailure(''); setMessage('')
+    const { enabled, projects, initial_email, result_email } = draft
+    try { setDraft(await api<Settings>(`/connections/sentry/${connection.id}/automation`, { enabled, projects, initial_email, result_email }, 'PUT')); setMessage('Automation settings saved.') }
     catch (e) { setFailure(userMessage(e)) } finally { setBusy(false) }
   }
   if (!draft) return error ? <ErrorState error={error} retry={retry} /> : <LoadingState>Loading automation settings</LoadingState>
