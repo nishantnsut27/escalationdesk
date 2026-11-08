@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import time
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from starlette.exceptions import HTTPException
 from . import db
@@ -148,9 +149,12 @@ def public_import(row):
             if k not in {"user_id", "fingerprint"}}
 
 
-def create_import(owner, connection, options, retry_of=None):
-    fingerprint = hashlib.sha256(json.dumps([connection["id"], options, NORMALIZATION_VERSION], sort_keys=True).encode()).hexdigest()
-    with db.connection() as conn:
+def create_import(owner, connection, options, retry_of=None, *, transaction=None, scope_key=None):
+    identity = [connection["id"], options, NORMALIZATION_VERSION]
+    if scope_key is not None:
+        identity.append(scope_key)
+    fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    with (nullcontext(transaction) if transaction is not None else db.connection()) as conn:
         db.lock(conn)
         if not retry_of:
             existing = conn.execute("SELECT * FROM sentry_imports WHERE user_id=%s AND fingerprint=%s ORDER BY created_at DESC,id DESC LIMIT 1", (owner, fingerprint)).fetchone()
@@ -200,11 +204,18 @@ class ImportWorker:
     async def loop(self):
         while True:
             self.event.clear()
-            row = db.one("SELECT * FROM sentry_imports WHERE state='queued' ORDER BY created_at,id LIMIT 1")
-            if row:
-                await self.run(row)
-            else:
-                await self.event.wait()
+            try:
+                row = await asyncio.to_thread(db.one, "SELECT * FROM sentry_imports WHERE state='queued' ORDER BY created_at,id LIMIT 1")
+                if row:
+                    await self.run(row)
+                    continue
+            except db.Error:
+                # A storage outage must not discard the durable import handoff.
+                pass
+            try:
+                await asyncio.wait_for(self.event.wait(), timeout=5)
+            except TimeoutError:
+                pass
 
     def alive(self, job):
         row = db.one("SELECT state FROM sentry_imports WHERE id=%s", (job["id"],))
@@ -298,6 +309,13 @@ class ImportWorker:
         summary = json.loads(db.one("SELECT summary FROM collections WHERE id=%s", (job["collection_id"],))["summary"])
         error, final = None, "completed"
         try:
+            with db.connection() as conn:
+                automatic = conn.execute("SELECT i.* FROM automatic_incidents i JOIN automatic_attempts a ON a.incident_id=i.id WHERE a.import_id=%s", (job['id'],)).fetchone()
+                if automatic:
+                    from .automation import eligible
+                    connection = conn.execute("SELECT * FROM sentry_connections WHERE id=%s", (job['connection_id'],)).fetchone()
+                    if not eligible(conn, connection, automatic['project_id']):
+                        raise SentryError("Automatic evidence collection was disabled before starting.")
             self.alive(job)
             self.progress(job, summary)
             connection = db.one("SELECT * FROM sentry_connections WHERE id=%s", (job["connection_id"],))

@@ -5,6 +5,7 @@ import { sourceDate } from '../lib/time'
 import { Badge } from './ui/badge'
 import { CupLoader } from './ui/cup-loader'
 import { LayoutSkeleton, type LoadingLayout } from './loading'
+import { ErrorToast } from './ui/toast'
 export function Brand() { return <a className="brand" href="/" aria-label="TraceDesk home"><span className="brand-symbol"><Terminal size={21} /></span><span>TraceDesk</span></a> }
 export function Spinner() { return <span className="inline-spinner" aria-hidden="true"><LoaderCircle size={16} className="spin" /></span> }
 export function StatusBadge({ state }: { state: string }) {
@@ -16,8 +17,8 @@ export function StatusBadge({ state }: { state: string }) {
   return <Badge variant={good ? 'success' : bad ? 'error' : warning ? 'warning' : ['queued', 'running', 'pending'].includes(state) ? 'info' : 'neutral'}><Icon size={12} aria-hidden="true" />{label}</Badge>
 }
 export function Severity({ level = 'unknown' }: { level?: string }) { return <Badge variant={level === 'error' || level === 'fatal' ? 'error' : level === 'warning' ? 'warning' : level === 'info' ? 'info' : 'neutral'} className={'severity severity-' + level}>{level === 'error' || level === 'fatal' ? <AlertCircle size={12} aria-hidden="true" /> : level === 'warning' ? <TriangleAlert size={12} aria-hidden="true" /> : <CircleDot size={11} aria-hidden="true" />}{level}</Badge> }
-export function Notice({ children, kind = 'info' }: { children: ReactNode; kind?: 'info' | 'error' | 'warning' }) { return <div className={'notice notice-' + kind} role={kind === 'error' ? 'alert' : 'status'}><TriangleAlert size={16} aria-hidden="true" /><div>{children}</div></div> }
-export function ErrorState({ error, retry }: { error: unknown; retry?: () => void }) { return <Notice kind="error"><p>{userMessage(error)}</p>{retry && <button className="text-button" onClick={retry}>Try again</button>}</Notice> }
+export function Notice({ children, kind = 'info' }: { children: ReactNode; kind?: 'info' | 'error' | 'warning' }) { return kind === 'error' ? <ErrorToast>{children}</ErrorToast> : <div className={'notice notice-' + kind} role="status"><TriangleAlert size={16} aria-hidden="true" /><div>{children}</div></div> }
+export function ErrorState({ error, retry }: { error: unknown; retry?: () => void }) { return <><Notice kind="error"><p>{userMessage(error)}</p></Notice>{retry && <div className="error-recovery"><p>This section could not be loaded.</p><button className="button secondary" onClick={retry}>Try again</button></div>}</> }
 export function EmptyState({ title, children, action }: { title: string; children: ReactNode; action?: ReactNode }) { return <div className="empty-state"><h3>{title}</h3><div className="empty-description">{children}</div>{action}</div> }
 export function LoadingState({ children = 'Loading saved evidence…', layout = 'detail', cup = false, count }: { children?: ReactNode; layout?: LoadingLayout; cup?: boolean; count?: number }) { return cup ? <div className="loading-state loading-cup" role="status"><CupLoader /><span>{children}</span></div> : <div className="loading-state" role="status"><span className="sr-only">{children}</span><div className="layout-skeleton" aria-hidden="true"><LayoutSkeleton layout={layout} count={count} /></div></div> }
 export function PageHeading({ eyebrow, title, children, actions }: { eyebrow?: string; title: string; children?: ReactNode; actions?: ReactNode }) { return <div className="page-heading"><div>{eyebrow && <span className="eyebrow">{eyebrow}</span>}<h1>{title}</h1>{children && <p>{children}</p>}</div>{actions && <div className="heading-actions">{actions}</div>}</div> }

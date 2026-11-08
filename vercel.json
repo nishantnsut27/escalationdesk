@@ -29,7 +29,7 @@
       "handle": "filesystem"
     },
     {
-      "src": "/(login|signup|demo-login|forgot|account|privacy|dashboard|collections|errors|investigations|connections|import|logs|demo|overview|history|evidence|imports)/?",
+      "src": "/(login|signup|demo-login|forgot|account|privacy|dashboard|collections|errors|investigations|incidents|connections|import|logs|demo|overview|history|evidence|imports)/?",
       "methods": [
         "GET",
         "HEAD"
@@ -37,7 +37,7 @@
       "dest": "/index.html"
     },
     {
-      "src": "/(collections|investigations|demo|history|evidence)/[^/]+/?",
+      "src": "/(collections|investigations|incidents|demo|history|evidence)/[^/]+/?",
       "methods": [
         "GET",
         "HEAD"

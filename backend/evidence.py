@@ -341,6 +341,7 @@ class EvidenceContext:
         self.queries = []
         self.topology = None
         self.trace_sources = set()
+        self.trigger_sources = set()
         self.selected_trace = None
         self.triage = None
         self.advisory_priority = []
@@ -374,7 +375,7 @@ class EvidenceContext:
         # Query arguments help select the next tool, but final reports need the
         # observations. Keep the complete query history in saved activity.
         recent = [] if "response_format" in base else self.queries[-6:]
-        priority = set(self.trace_sources)
+        priority = set(self.trace_sources) | self.trigger_sources
         # Keep one independently successful HTTP observation alongside a failing
         # selected trace. It is counterevidence to blanket failure, not recovery.
         selected = [r for r in self.records.values() if r["id"] in self.trace_sources]

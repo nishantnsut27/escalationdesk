@@ -152,6 +152,7 @@ async def check(request):
 
 
 def cancel_jobs(conn, connection_id):
+    conn.execute("UPDATE sentry_automation SET enabled=FALSE,updated_at=%s WHERE connection_id=%s", (db.now(), connection_id))
     rows = conn.execute("SELECT collection_id FROM sentry_imports WHERE connection_id=%s AND state IN ('queued','running','rate_limited')", (connection_id,)).fetchall()
     conn.execute("UPDATE sentry_imports SET state='cancelled',completed_at=%s,error='Sentry connection was disconnected.' WHERE connection_id=%s AND state IN ('queued','running','rate_limited')", (db.now(), connection_id))
     for item in rows:
@@ -195,7 +196,10 @@ async def webhook(request):
             raise ValueError()
     except (ValueError, TypeError, AttributeError):
         raise HTTPException(400, "Invalid installation notification.") from None
-    # Only installation events belong to Phase 9; alerts never enqueue analysis.
+    if request.headers.get("sentry-hook-resource") == "issue":
+        from .automation import accept
+        import asyncio
+        return JSONResponse(await asyncio.to_thread(accept, raw, value, request.headers))
     if request.headers.get("sentry-hook-resource") != "installation" or value.get("action") not in {"created", "deleted"}:
         return JSONResponse({"ok": True, "ignored": True})
     with db.connection() as conn:

@@ -42,19 +42,26 @@ def init():
             if not transferred or not conn.execute("SELECT 1 FROM storage_transfers LIMIT 1").fetchone():
                 raise ValueError("Migrate the retained SQLite backup before starting PostgreSQL. Automatic fallback is disabled.")
         migrate(conn)
+        automatic_schema = conn.execute("SELECT to_regclass('automatic_attempts') AS name").fetchone()['name'] is not None
+        unstarted = " AND NOT (state='queued' AND EXISTS (SELECT 1 FROM automatic_attempts a WHERE a.investigation_id=investigations.id AND a.started_at IS NULL AND a.state IN ('queued','deferred')))" if automatic_schema else ""
         for row in conn.execute("SELECT c.id,c.summary FROM collections c JOIN sentry_imports s ON s.collection_id=c.id WHERE s.state IN ('queued','running','rate_limited')").fetchall():
             summary=json.loads(row["summary"])
             summary["coverage"]="Server restarted during Sentry import. Retained evidence is partial; retry creates a new snapshot."
             conn.execute("UPDATE collections SET summary=%s WHERE id=%s",(json.dumps(summary),row["id"]))
         conn.execute("UPDATE sentry_imports SET state='interrupted',completed_at=%s,error='Server restarted. Retry to create a new snapshot.' WHERE state IN ('queued','running','rate_limited')",(now(),))
-        for row in conn.execute("SELECT id,usage FROM investigations WHERE state IN ('queued','running','quota_waiting')").fetchall():
+        for row in conn.execute("SELECT id,usage FROM investigations WHERE state IN ('queued','running','quota_waiting')" + unstarted).fetchall():
             usage=json.loads(row["usage"])
             triage=usage.get("triage")
             if triage and triage.get("state") in {"pending","running"}:
                 triage.update(state="interrupted",completed_at=now(),reason="Server restarted before triage finished.")
                 conn.execute("UPDATE investigations SET usage=%s WHERE id=%s",(json.dumps(usage),row["id"]))
         conn.execute("UPDATE supplements SET state='interrupted',completed_at=%s,error='Server restarted. Retry further analysis to create a new retained attempt.' WHERE state IN ('queued','running','quota_waiting')",(now(),))
-        conn.execute("UPDATE investigations SET state='interrupted',error='Server restarted. Start a new investigation.' WHERE state IN ('queued','running','quota_waiting')")
+        conn.execute("UPDATE investigations SET state='interrupted',completed_at=%s,error='Server restarted. Start a new investigation.' WHERE state IN ('queued','running','quota_waiting')" + unstarted, (now(),))
+        if automatic_schema:
+            conn.execute("UPDATE automatic_attempts a SET state=CASE WHEN i.report::jsonb->>'assessment'='inconclusive' THEN 'inconclusive' ELSE 'completed' END,completed_at=i.completed_at,error=NULL FROM investigations i WHERE a.investigation_id=i.id AND i.state='completed' AND a.state IN ('investigating','waiting','queued')")
+            conn.execute("UPDATE automatic_incidents i SET state=a.state,completed_at=a.completed_at,error=a.error FROM automatic_attempts a WHERE a.incident_id=i.id AND a.number=(SELECT MAX(number) FROM automatic_attempts WHERE incident_id=i.id) AND a.state IN ('completed','inconclusive') AND i.state IN ('investigating','waiting','queued')")
+            conn.execute("UPDATE automatic_attempts SET state='interrupted',completed_at=%s,error='Server restarted after investigation started. Retry explicitly; previous spending is retained.' WHERE started_at IS NOT NULL AND state IN ('investigating','waiting','queued')", (now(),))
+            conn.execute("UPDATE automatic_incidents i SET state='interrupted',error='Server restarted after investigation started. Retry explicitly; previous spending is retained.',completed_at=%s WHERE EXISTS (SELECT 1 FROM automatic_attempts a WHERE a.incident_id=i.id AND a.state='interrupted' AND a.number=(SELECT MAX(number) FROM automatic_attempts WHERE incident_id=i.id)) AND i.state IN ('investigating','waiting','queued')", (now(),))
         conn.execute("UPDATE runs SET state='interrupted',ended_at=%s WHERE state IN ('running','starting','resetting')",(now(),))
         conn.execute("UPDATE incidents SET state='interrupted' WHERE state='open'")
 

@@ -3,12 +3,17 @@ import type { Evidence } from './api'
 
 export type Route = { page: string; id: string; params: URLSearchParams }
 const aliases: Record<string, string> = { overview: 'dashboard', history: 'investigations', evidence: 'collections', imports: 'import' }
-const appPages = new Set(['', 'login', 'signup', 'demo-login', 'forgot', 'account', 'privacy', 'dashboard', 'collections', 'errors', 'investigations', 'connections', 'import', 'logs', 'demo'])
-const detailPages = new Set(['collections', 'investigations', 'demo'])
+const appPages = new Set(['', 'login', 'signup', 'demo-login', 'forgot', 'account', 'privacy', 'dashboard', 'collections', 'errors', 'investigations', 'incidents', 'connections', 'import', 'logs', 'demo'])
+const detailPages = new Set(['collections', 'investigations', 'incidents', 'demo'])
 export const navigationEvent = 'tracedesk:navigate'
 export type SessionStatus = 'pending' | 'authenticated' | 'anonymous' | 'error'
 export function isProtectedRoute(href: string) {
-  return ['dashboard', 'collections', 'errors', 'investigations', 'connections', 'import', 'logs', 'demo'].includes(parseRoute(href).page)
+  return ['dashboard', 'collections', 'errors', 'investigations', 'incidents', 'connections', 'import', 'logs', 'demo'].includes(parseRoute(href).page)
+}
+export function emailDestination(href: string) {
+  if (!href.startsWith('/') || href.startsWith('//') || href.includes('\\')) return ''
+  const route = parseRoute(href)
+  return ((['incidents', 'investigations'].includes(route.page) && route.id) || (route.page === 'logs' && route.params.get('investigation') && route.params.get('evidence'))) ? routeHref(route.page, route.id, Object.fromEntries(route.params)) : ''
 }
 export function destinationAfterAuth() { return '/dashboard' }
 export function parseRoute(href: string): Route {

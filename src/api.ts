@@ -10,10 +10,10 @@ export function userMessage(error: unknown, fallback = 'The request could not be
 }
 let csrf = ''
 export function setCsrf(value: string) { csrf = value }
-export async function api<T>(path: string, body?: unknown): Promise<T> {
+export async function api<T>(path: string, body?: unknown, method: 'POST' | 'PUT' = 'POST'): Promise<T> {
   const response = await fetch('/api' + path, {
     credentials: 'same-origin',
-    ...(body !== undefined ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(body) } : {}),
+    ...(body !== undefined ? { method, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(body) } : {}),
   })
   let data
   try { data = await response.json() }

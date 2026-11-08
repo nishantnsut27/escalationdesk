@@ -3,9 +3,9 @@ from starlette.staticfiles import StaticFiles
 
 
 APP_PAGES = {"login", "signup", "demo-login", "forgot", "account", "privacy", "dashboard",
-             "collections", "errors", "investigations", "connections", "import", "logs", "demo",
+             "collections", "errors", "investigations", "incidents", "connections", "import", "logs", "demo",
              "overview", "history", "evidence", "imports"}
-DETAIL_PAGES = {"collections", "investigations", "demo", "history", "evidence"}
+DETAIL_PAGES = {"collections", "investigations", "incidents", "demo", "history", "evidence"}
 
 
 def is_app_path(path):

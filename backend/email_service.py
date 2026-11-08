@@ -14,7 +14,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 
-from . import config, db
+from . import config, db, email_templates
 
 SENDER = "TraceDesk <notifications@mail.tracedesk.nishantraj.me>"
 REPLY_TO = "yournishantraj@gmail.com"
@@ -46,17 +46,15 @@ def configured():
                 (os.environ.get("DESK_EMAIL_KEY") or config.CONNECTION_KEY))
 
 
-def enqueue(conn, user, kind, text, dedupe_key, expires):
+def enqueue(conn, user, kind, text, dedupe_key, expires, *, rendered=None, incident_id=None, attempt_id=None):
     stamp = time.time()
     identifier = db.uid()
-    subject = {"verify": "Verify your TraceDesk email", "reset": "Reset your TraceDesk password",
-               "password_changed": "Your TraceDesk password was changed"}[kind]
-    # Plain-text authentication messages have no tracked HTML links or pixels.
+    rendered = rendered or email_templates.authentication(kind, text)
     payload = {"from": SENDER, "to": [user["email"]], "reply_to": REPLY_TO,
-               "subject": subject, "text": text}
+               **rendered}
     sealed = encryption().encrypt(json.dumps(payload, separators=(",", ":")).encode()).decode()
-    conn.execute("INSERT INTO email_jobs(id,user_id,kind,dedupe_key,payload,created_at,expires,state,next_attempt) VALUES(%s,%s,%s,%s,%s,%s,%s,'queued',%s) ON CONFLICT(dedupe_key) DO NOTHING",
-                 (identifier,user["id"],kind,dedupe_key,sealed,stamp,min(expires,stamp+23*3600),stamp))
+    conn.execute("INSERT INTO email_jobs(id,user_id,kind,dedupe_key,payload,created_at,expires,state,next_attempt,template_version,incident_id,automatic_attempt_id) VALUES(%s,%s,%s,%s,%s,%s,%s,'queued',%s,%s,%s,%s) ON CONFLICT(dedupe_key) DO NOTHING",
+                 (identifier,user["id"],kind,dedupe_key,sealed,stamp,min(expires,stamp+23*3600),stamp,email_templates.VERSION,incident_id,attempt_id))
 
 
 def verify_webhook(raw, headers, *, secret=None, now=None):
@@ -174,6 +172,11 @@ class EmailWorker:
         retry, error, provider_id = False, None, None
         delay = min(600, 15 * 2**job["attempts"])
         try:
+            if job.get("incident_id"):
+                from .automation import notification_allowed
+                if not await asyncio.to_thread(notification_allowed, job):
+                    await asyncio.to_thread(db.execute, "UPDATE email_jobs SET state='cancelled',payload=NULL,lease_until=NULL,last_error='Notification disabled before delivery.' WHERE id=%s AND state='sending'", (job["id"],))
+                    return True
             payload = json.loads(encryption().decrypt(job["payload"].encode()))
             response = await self.client.post("https://api.resend.com/emails", json=payload,
                 headers={"Authorization": "Bearer "+os.environ["RESEND_API_KEY"],

@@ -25,16 +25,22 @@ class VerificationTransport(HttpTransport):
         self.dropped.append(reason)
 
 
-def create_app(run_id):
+def create_app(run_id, new_issue=False):
     dsn = os.getenv("SENTRY_TEST_DSN", "").strip()
     if not dsn:
         raise RuntimeError("Set SENTRY_TEST_DSN for the dedicated escalation-test project.")
+    def before_send(event, hint):
+        cleaned = scrub_event(event, hint)
+        if cleaned and new_issue:
+            cleaned['fingerprint'] = ['tracedesk-phase12-pilot', run_id]
+        return cleaned
+
     sentry_sdk.init(
         dsn=dsn, environment="verification", release="escalation-test@1",
         send_default_pii=False, include_local_variables=False, traces_sample_rate=1.0,
         default_integrations=False, integrations=[StarletteIntegration()],
         transport=VerificationTransport,
-        before_send=scrub_event, before_send_transaction=scrub_event,
+        before_send=before_send, before_send_transaction=scrub_event,
         before_send_log=lambda value, hint: scrub_event(value),
     )
     sentry_sdk.set_tag("verification.run_id", run_id)
@@ -75,5 +81,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--new-issue", action="store_true", help="Give this dedicated pilot a stable issue fingerprint.")
     args = parser.parse_args()
-    uvicorn.run(create_app(args.run_id), host="127.0.0.1", port=args.port, access_log=False, log_level="warning")
+    uvicorn.run(create_app(args.run_id, args.new_issue), host="127.0.0.1", port=args.port, access_log=False, log_level="warning")

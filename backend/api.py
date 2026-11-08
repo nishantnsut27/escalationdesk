@@ -25,6 +25,7 @@ from .sentry_client import SentryClient
 from .sentry_imports import ImportWorker
 from . import account_email, email_service
 from . import workspace_api
+from . import automation
 
 def owned(request, table, record_id):
     user = auth.current(request)
@@ -316,7 +317,10 @@ async def lifespan(app):
         app.state.sentry_importer.start()
         app.state.email_worker = email_service.EmailWorker(email_http)
         app.state.email_worker.start()
+        app.state.automation = automation.AutomationWorker(app.state.sentry, app.state.sentry_importer, app.state.investigator)
+        app.state.automation.start()
         yield
+        await app.state.automation.close()
         await app.state.controller.close()
         await app.state.investigator.close()
         await app.state.sentry_importer.close()
@@ -357,6 +361,7 @@ def create_app():
         Route("/api/scenarios/reset", reset_scenario, methods=["POST"]),
     ]
     routes.extend(sentry_api.routes)
+    routes.extend(automation.routes)
     routes.extend(workspace_api.routes)
     if (ROOT / "dist").exists():
         routes.append(Mount("/", AppStaticFiles(directory=ROOT / "dist", html=True)))

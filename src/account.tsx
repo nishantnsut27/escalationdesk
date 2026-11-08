@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useId, useState, type FormEvent, type InputHTMLAttributes } from 'react'
 import { ArrowLeft, Eye, EyeOff, LoaderCircle, Mail, ShieldCheck } from 'lucide-react'
 import { api, type User } from './api'
-import { Spinner } from './components/common'
+import { Spinner, ErrorState } from './components/common'
 import { AuthFieldIcon } from './components/auth-field'
 
 export type AuthenticationLink = { purpose: 'verify' | 'reset'; token: string }
@@ -52,7 +52,7 @@ export function AccountPage({ link, invalid = false, onExit, onVerified, onReset
     {!invalid && (done ? <><p role="status">{message}</p><button className="button primary full" onClick={verify && onVerified ? onVerified : onExit}>{verify ? 'Continue to workspace' : 'Return to sign in'}</button></> : <form onSubmit={submit}>
       {!link && <label>Email address<input name="email" type="email" autoComplete="email" required maxLength={200} disabled={busy} /></label>}
       {link?.purpose === 'reset' && <><PasswordField label="New password" name="password" autoComplete="new-password" minLength={10} maxLength={128} required disabled={busy} /><PasswordField label="Confirm new password" name="confirm" autoComplete="new-password" minLength={10} maxLength={128} required disabled={busy} /><p className="account-help">Choose a password different from your current one. The link is checked when you submit; used or expired links cannot change your password.</p></>}
-      {error && <p className="error-banner" role="alert">{error}</p>}
+      {error && <ErrorState error={error} />}
       <button className="button primary full" aria-busy={busy || undefined} disabled={busy}>{busy ? <LoaderCircle size={16} className="spin" /> : verify ? <ShieldCheck size={16} /> : <Mail size={16} />}{verify ? 'Confirm email address' : link ? 'Change password' : 'Send reset link'}</button>
     </form>)}
     {!done && <button className="button account-back" disabled={busy} onClick={onExit}><ArrowLeft size={16} />Return to sign in</button>}
@@ -84,7 +84,7 @@ export function VerificationBanner({ user, onRefresh }: { user: User; onRefresh:
     catch(e) { setError(e instanceof Error ? e.message : 'Unable to refresh verification.') }
     finally { setBusy(false) }
   }
-  return <section className="verification-banner" aria-label="Email verification"><div><strong>Verify {user.email}</strong><p>Your saved history is retained. Verify your email to enter your workspace.</p>{message && <p role="status">{message}</p>}{error && <p role="alert">{error}</p>}</div><div className="account-actions"><button className="button" aria-busy={busy && pendingAction === 'request' || undefined} disabled={busy || remaining > 0} onClick={request}><span className="inline-spinner">{busy && pendingAction === 'request' && <Spinner />}</span>{remaining ? `Resend in ${remaining}s` : 'Send verification email'}</button><button className="button" aria-busy={busy && pendingAction === 'refresh' || undefined} disabled={busy} onClick={refresh}><span className="inline-spinner">{busy && pendingAction === 'refresh' && <Spinner />}</span>Check verification</button></div></section>
+  return <section className="verification-banner" aria-label="Email verification"><div><strong>Verify {user.email}</strong><p>Your saved history is retained. Verify your email to enter your workspace.</p>{message && <p role="status">{message}</p>}{error && <ErrorState error={error} />}</div><div className="account-actions"><button className="button" aria-busy={busy && pendingAction === 'request' || undefined} disabled={busy || remaining > 0} onClick={request}><span className="inline-spinner">{busy && pendingAction === 'request' && <Spinner />}</span>{remaining ? `Resend in ${remaining}s` : 'Send verification email'}</button><button className="button" aria-busy={busy && pendingAction === 'refresh' || undefined} disabled={busy} onClick={refresh}><span className="inline-spinner">{busy && pendingAction === 'refresh' && <Spinner />}</span>Check verification</button></div></section>
 }
 
 export function VerifyAccountPage({ user, onRefresh, onLogout, error }: { user: User; onRefresh: () => Promise<void>; onLogout: () => Promise<void>; error?: string }) {
@@ -94,7 +94,7 @@ export function VerifyAccountPage({ user, onRefresh, onLogout, error }: { user: 
     <h1 id="verify-title">Verify your email to continue.</h1>
     <p>Open the TraceDesk verification email and confirm your address. Then check verification below to enter your workspace.</p>
     <VerificationBanner user={user} onRefresh={onRefresh} />
-    {error && <p className="error-banner" role="alert">{error}</p>}
+    {error && <ErrorState error={error} />}
     <button className="button account-back" disabled={leaving} onClick={async () => { setLeaving(true); try { await onLogout() } finally { setLeaving(false) } }}>{leaving ? <LoaderCircle size={16} className="spin" /> : <ArrowLeft size={16} />}Sign out</button>
   </section></div>
 }

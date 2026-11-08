@@ -1,12 +1,12 @@
 import { Fragment, lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { Cable, ChevronRight, FileInput, Fingerprint, LayoutDashboard, Layers3, LogOut, Menu, ShieldCheck, TriangleAlert, X } from 'lucide-react'
+import { Bell, Cable, ChevronRight, FileInput, Fingerprint, LayoutDashboard, Layers3, LogOut, Menu, ShieldCheck, TriangleAlert, X } from 'lucide-react'
 import { api, ApiError, setCsrf, userMessage, type Session, type User } from './api'
 import { AccountPage, parseAuthenticationLink, VerifyAccountPage, WritePermission } from './account'
 import { Auth } from './auth'
 import Home, { DataUse } from './home'
 import { Brand, EmptyState, ErrorState, LoadingState } from './components/common'
 import { useLoadingMotion } from './components/loading'
-import { useRoute, useAppNavigation, navigate, navigationEvent, type SessionStatus } from './routes'
+import { useRoute, useAppNavigation, navigate, navigateHref, emailDestination, currentRouteHref, navigationEvent, type SessionStatus } from './routes'
 
 const Dashboard = lazy(() => import('./dashboard').then(module => ({ default: module.Dashboard })))
 const Errors = lazy(() => import('./dashboard').then(module => ({ default: module.Errors })))
@@ -17,9 +17,11 @@ const ConnectionsWorkspace = lazy(() => import('./connections').then(module => (
 const ImportWorkspace = lazy(() => import('./imports').then(module => ({ default: module.ImportWorkspace })))
 const DemoWorkspace = lazy(() => import('./scenarios').then(module => ({ default: module.DemoWorkspace })))
 const LogsWorkspace = lazy(() => import('./logs'))
+const IncidentsWorkspace = lazy(() => import('./incidents').then(module => ({ default: module.IncidentsWorkspace })))
 export { ReportView } from './assessments'
 
 function clearDestination() { try { sessionStorage.removeItem('tracedesk:return-to') } catch { /* Storage can be disabled by the browser. */ } }
+function pendingDestination() { try { return emailDestination(sessionStorage.getItem('tracedesk:return-to') || '') } catch { return '' } }
 
 export default function App() {
   useLoadingMotion()
@@ -34,15 +36,20 @@ export default function App() {
   const epoch = useRef(0), main = useRef<HTMLElement>(null), sidebar = useRef<HTMLElement>(null), lastPage = useRef(route.page)
 
   const acceptSession = useCallback((value: Session, explicit = true) => {
-    epoch.current++; setCsrf(value.csrf); setUser(value.user); setError(''); setSessionStatus('authenticated'); clearDestination()
-    if (explicit) navigate('dashboard', '', {}, true)
+    const destination = value.user.read_only ? '' : pendingDestination() || emailDestination(currentRouteHref())
+    epoch.current++; setCsrf(value.csrf); setUser(value.user); setError(''); setSessionStatus('authenticated')
+    if (value.user.email_verified || value.user.read_only) clearDestination()
+    if (explicit) navigateHref(destination || '/dashboard', true)
   }, [])
   const refreshSession = useCallback(async () => {
     const value = await api<Session>('/auth/me')
+    const destination = pendingDestination()
     acceptSession(value, false)
-    if (value.user.email_verified && user && !user.email_verified && !user.read_only) navigate('dashboard', '', {}, true)
+    if (value.user.email_verified && user && !user.email_verified && !user.read_only) navigateHref(destination || '/dashboard', true)
   }, [acceptSession, user])
   const expireSession = useCallback(() => {
+    const destination = emailDestination(currentRouteHref())
+    if (destination) try { sessionStorage.setItem('tracedesk:return-to', destination) } catch { /* Optional browser storage. */ }
     epoch.current++; setUser(null); setCsrf(''); setSessionStatus('anonymous'); setError('Your session expired. Sign in to open your dashboard.')
   }, [])
   const retrySession = useCallback(async () => {
@@ -76,6 +83,13 @@ export default function App() {
     for (const event of ['hashchange', 'popstate', navigationEvent]) window.addEventListener(event, consume)
     return () => { for (const event of ['hashchange', 'popstate', navigationEvent]) window.removeEventListener(event, consume) }
   }, [])
+  useEffect(() => {
+    if (sessionStatus === 'anonymous' && ['', 'privacy'].includes(route.page)) clearDestination()
+    if (sessionStatus === 'anonymous' || user && !user.email_verified && !user.read_only) {
+      const destination = emailDestination(currentRouteHref())
+      if (destination) try { sessionStorage.setItem('tracedesk:return-to', destination) } catch { /* Optional browser storage. */ }
+    }
+  }, [sessionStatus, user, route.page, route.id, route.params.toString()])
   useEffect(() => {
     if (user && ['login', 'signup', 'demo-login'].includes(route.page)) {
       navigate('dashboard', '', {}, true)
@@ -113,13 +127,13 @@ export default function App() {
   if (sessionStatus === 'error') return <div className="initializing"><Brand /><ErrorState error={error} retry={() => void retrySession()} /></div>
   if (route.page === 'account') return <AccountPage invalid onExit={exitAccount} />
   if (route.page === 'not-found') return <div className="public-detail"><Brand /><EmptyState title="This page is unavailable"><a href="/">Return to TraceDesk</a></EmptyState></div>
-  if (!user) return <>{error && <div className="auth-notice"><ErrorState error={error} /></div>}<Auth mode={route.page === 'demo' ? 'demo-login' : route.page} onSession={acceptSession} /></>
+  if (!user) return <>{error && <ErrorState error={error} />}<Auth mode={route.page === 'demo' ? 'demo-login' : route.page} onSession={acceptSession} /></>
   if (!user.read_only && !user.email_verified) return <VerifyAccountPage user={user} onRefresh={refreshSession} onLogout={logout} error={error} />
 
   const nav = [
     { page: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }, { page: 'collections', label: 'Saved evidence', icon: Layers3 },
     { page: 'errors', label: 'Errors', icon: TriangleAlert }, { page: 'investigations', label: 'Investigations', icon: Fingerprint },
-    ...(!user.read_only ? [{ page: 'connections', label: 'Connections', icon: Cable }, { page: 'import', label: 'Import logs', icon: FileInput }] : []),
+    ...(!user.read_only ? [{ page: 'incidents', label: 'Incidents', icon: Bell }, { page: 'connections', label: 'Connections', icon: Cable }, { page: 'import', label: 'Import logs', icon: FileInput }] : []),
   ]
   const title = route.page === 'logs' ? 'Log workspace' : route.page === 'demo' ? 'Recorded demos' : nav.find(item => item.page === route.page)?.label || 'Workspace'
   let content
@@ -131,6 +145,7 @@ export default function App() {
     case 'logs': content = <LogsWorkspace />; break
     case 'demo': content = <DemoWorkspace slug={route.id} />; break
     case 'connections': content = user.read_only ? <EmptyState title="Read-only demonstration">Connections are available in a regular account.</EmptyState> : <ConnectionsWorkspace />; break
+    case 'incidents': content = user.read_only ? <EmptyState title="Read-only demonstration">Automatic incidents belong to regular accounts.</EmptyState> : <IncidentsWorkspace key={route.id} id={route.id} />; break
     case 'import': content = user.read_only ? <EmptyState title="Read-only demonstration">Import your own evidence using a regular account.</EmptyState> : <ImportWorkspace />; break
     default: content = <EmptyState title="This page is unavailable"><a href="/dashboard">Return to your dashboard</a> to open saved evidence.</EmptyState>
   }
@@ -153,6 +168,6 @@ export default function App() {
       {user.read_only && <a className={'demo-nav' + (route.page === 'demo' ? ' active' : '')} href="/demo"><Layers3 size={17} />Recorded demo gallery</a>}
       <div className="sidebar-bottom"><div className="snapshot-note"><ShieldCheck size={16} /><p>{user.read_only ? 'Reviewed recordings. Browsing does not start analysis.' : 'Saved snapshots. Investigate when you are ready.'}</p></div><div className="user-row"><span className="avatar">{user.name.charAt(0).toUpperCase()}</span><div><strong>{user.name}</strong><span>{user.read_only ? 'Recorded demo account' : user.email}</span></div><button className="icon-button" aria-label="Sign out" onClick={() => void logout()}><LogOut size={16} /></button></div></div>
     </aside><div className="main-shell" inert={mobileNav}><header className="topbar"><div><button className="icon-button mobile-only" aria-label="Open navigation" aria-expanded={mobileNav} aria-controls="workspace-navigation" onClick={() => setMobileNav(!mobileNav)}><Menu size={20} /></button><span>Workspace</span><ChevronRight size={13} /><strong>{title}</strong></div><span className="connection-pill"><i />{user.read_only ? 'Recorded demonstration' : 'Saved evidence'}</span></header>
-      <main ref={main} id="main-content" tabIndex={-1} key={user.id}>{error && <div className="global-error"><ErrorState error={error} /><button className="icon-button" aria-label="Dismiss message" onClick={() => setError('')}><X size={16} /></button></div>}<Suspense fallback={<LoadingState layout={route.page === 'dashboard' ? 'dashboard' : route.page === 'errors' ? 'errors' : route.page === 'collections' ? route.id ? 'collection' : 'cards' : route.page === 'demo' ? 'demo' : route.page === 'investigations' && !route.id ? 'investigations' : 'detail'} />}>{content}</Suspense><footer className="page-footer"><span>saved snapshots / manual investigation</span><a href="/privacy">Data use</a></footer></main>
+      <main ref={main} id="main-content" tabIndex={-1} key={user.id}>{error && <ErrorState error={error} />}<Suspense fallback={<LoadingState layout={route.page === 'dashboard' ? 'dashboard' : route.page === 'errors' ? 'errors' : route.page === 'collections' ? route.id ? 'collection' : 'cards' : route.page === 'demo' ? 'demo' : route.page === 'investigations' && !route.id ? 'investigations' : 'detail'} />}>{content}</Suspense><footer className="page-footer"><span>saved evidence / cited assessments</span><a href="/privacy">Data use</a></footer></main>
     </div></div></WritePermission.Provider>
 }

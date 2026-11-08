@@ -60,7 +60,7 @@ Its connection pool holds real SQLite connections. Its trace exporter records ac
 
 Phase 7 browser acceptance passed, user-verified on 2026-11-03. Phase 8 adds recorded demos and local live scenarios; its new interactive browser acceptance remains separate. The later roadmap adds Sentry imports, evaluation/password recovery, hosting and opt-in Sentry alert investigations. Gateway, Order and Payment remain reference/demo services.
 
-The current evidence-workspace redesign retains six published demos and the paused 18/36 benchmark. Deployment, automatic alert investigations, additional live/paid evaluation, extra demo publication and live infrastructure monitoring are outside this workstream.
+The evidence workspace retains six published demos and the paused 18/36 benchmark. Phase 12 adds opted-in automatic Sentry investigations and incident emails. Additional live/paid evaluation, extra demo publication and live infrastructure monitoring remain separate work.
 
 ## Recorded demos
 
@@ -143,7 +143,7 @@ For loopback development without email, explicitly override `DESK_PUBLIC_URL` wi
 
 ## Sentry setup
 
-Create a Public Integration in Sentry's **Settings → Developer Settings** with Organization, Project and Issue & Event **Read** permissions. Enable **Verify Install**. Set the redirect URL to `https://YOUR-HOST/api/connections/sentry/callback` and the webhook URL to `https://YOUR-HOST/api/connections/sentry/webhook`. Leave alert actions disabled; only installation lifecycle notifications are handled. Until Sentry approval, the integration is limited to its creating organization.
+Create a Public Integration in Sentry's **Settings → Developer Settings** with Organization, Project and Issue & Event **Read** permissions. Enable **Verify Install** and subscribe to **Issue webhooks**, retaining Installation handling. Set the redirect URL to `https://YOUR-HOST/api/connections/sentry/callback` and the webhook URL to `https://YOUR-HOST/api/connections/sentry/webhook`. Alert Actions can remain disabled. Until Sentry approval, the integration is limited to its creating organization.
 
 For local verification, point a temporary HTTPS tunnel at port 8020. Put its exact origin in `DESK_PUBLIC_URL`, and the assigned `SENTRY_APP_SLUG`, `SENTRY_CLIENT_ID` and `SENTRY_CLIENT_SECRET` in ignored `backend/.env`. Remove blank overrides in the root `.env`. Generate the credential-encryption key once, then check configuration:
 
@@ -157,6 +157,18 @@ Retain `DESK_CONNECTION_KEY` outside the database and reuse it across restarts. 
 Send application telemetry to Sentry first; a DSN is for ingestion and does not replace the integration's read authorization. The separate test app runs through `scripts/check_sentry.py` with `SENTRY_TEST_DSN` configured. It sends three controlled integer-parsing failures and three successful requests; verify delivery in the dedicated test project before importing its matching window.
 
 Select authorized projects and datasets, then import up to 24 hours and 5,000 observations. Dataset availability, sampling and partial imports are disclosed with the saved snapshot. Importing and browsing never invoke AI; **Investigate** explicitly sends bounded redacted evidence to Jev and Groq. Local disconnect and Sentry uninstall leave saved evidence and reports readable. Reconnect with **Connect Sentry** when needed.
+
+## Automatic Sentry incidents
+
+Automation starts disabled. A verified regular account can select authorized projects in **Connections** and enable automatic investigation of new error issues and genuine reopening/regression. Initial-alert and result emails have independent preferences. **Incidents** shows lifecycle, imports, attempts, saved reports and delivery status; opening an incident or report does not call a model.
+
+Accepted signed notifications are saved before background work. Duplicate deliveries and repeated notifications for an open issue reuse its episode. Evidence collection waits 60 seconds and uses a 15-minute window around the trigger. Investigations share the existing single worker and provider limits. Each account has five automatic investigation starts per UTC day; failed starts count. Excess work remains deferred and resumes for up to 24 hours, then requires explicit retry. Started model work interrupted by restart also requires explicit retry. Disabling automation or disconnecting prevents new work while bounded running investigations can finish.
+
+The initial email reports the observed problem and actual queued/deferred status. Result emails use the saved assessment's assessed root cause and impact, up to two cited findings, next checks and limitations. Inconclusive results say the cause was not established. Failed/interrupted results retain evidence and link to an explicit retry. Emails use the existing encrypted Resend queue and shared branded HTML/plain-text templates without another analysis request.
+
+For Render, retain the existing database URL, `DESK_CONNECTION_KEY`, any separate `DESK_EMAIL_KEY`, Sentry integration credentials, Groq/OpenRouter keys, `RESEND_API_KEY`, and the frontend/API URLs. No new automation environment variable is required; settings are account-owned database records, and additive migration 6 runs at backend startup. For delivery/bounce confirmation, configure the existing `RESEND_WEBHOOK_SECRET` from the Resend endpoint at `https://api.tracedesk.nishantraj.me/api/email/webhook`. Sending works without that secret; confirmed receipt status requires it. Vercel needs no new environment variables; deploy its updated `/incidents` SPA routes.
+
+Reuse the existing Sentry integration and subscribe it to **Issue** deliveries at `https://api.tracedesk.nishantraj.me/api/connections/sentry/webhook`. After deployment, enable automation only for the dedicated test project. The controlled pilot must produce one incident, one initial email, one saved cited assessment and one result email; an initial email alone verifies only the alert handoff. Hosted pilot and Gmail/Outlook/mobile-client inspection remain acceptance checks, not claims from local browser fixtures.
 
 ## Model provider setup
 
@@ -286,7 +298,7 @@ Backend tests require network access to `DESK_TEST_DATABASE_URL` and create disp
 
 Frontend checks cover TypeScript compilation, API handling, imports, evidence review/fallback rendering, sources, saved reports, Sentry metadata and account-link states. Rendered acceptance used an isolated PostgreSQL fixture with mocked providers and locally captured account email. All 21 browser checks have passing evidence across the full invocation and affected account/demo rerun. The original failed runs and final results remain in `.cache/local-readiness-20261107/`; the browser harness and updated regression tests are retained locally. Hosted email/Sentry behavior remains separately unverified.
 
-External Sentry acceptance follows Phase 11 deployment of React on **Vercel** at `tracedesk.nishantraj.me` and Python on **Render** at `api.tracedesk.nishantraj.me`, with Neon PostgreSQL and verified HTTPS sessions. Hosted callback/webhook verification, Sentry submission/approval and second-organization isolation remain pending. Automatic investigations and incident emails remain Phase 12.
+Sentry uses React on **Vercel** at `tracedesk.nishantraj.me` and Python on **Render** at `api.tracedesk.nishantraj.me`, with Neon PostgreSQL and HTTPS sessions. Sentry submission/approval and second-organization isolation remain separate external checks. Phase 12 automatic investigations and incident emails are implemented locally; the hosted controlled pilot and real email-client acceptance remain pending.
 
 Run an explicit live Jev probe:
 
