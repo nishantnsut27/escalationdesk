@@ -9,7 +9,7 @@ from starlette.exceptions import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from starlette.routing import Route, Mount
-from starlette.staticfiles import StaticFiles
+from .spa import AppStaticFiles
 from . import auth, config, db
 from .config import ROOT, GROQ_KEY, JEV_KEY, ORIGINS, SERVICES, service_url
 from .investigator import Investigator
@@ -359,7 +359,7 @@ def create_app():
     routes.extend(sentry_api.routes)
     routes.extend(workspace_api.routes)
     if (ROOT / "dist").exists():
-        routes.append(Mount("/", StaticFiles(directory=ROOT / "dist", html=True)))
+        routes.append(Mount("/", AppStaticFiles(directory=ROOT / "dist", html=True)))
     def storage_unavailable(request, exc):
         return JSONResponse({"error": "Storage is temporarily unavailable. Please try again shortly."},
                             status_code=503, headers={"Retry-After": "5", "Cache-Control": "no-store"})

@@ -11,6 +11,25 @@
 .home-nav .home-section-nav { margin-left: auto; }
 .home-section-nav button { min-height: 44px; padding-inline: 6px; }
 .home-nav .home-account-nav { margin-left: 24px; }
+.home-mobile-menu { display: none; position: relative; }
+.home-mobile-menu summary { display: flex; align-items: center; justify-content: center; width: 36px; min-height: 40px; cursor: pointer; list-style: none; }
+.home-mobile-menu summary::-webkit-details-marker { display: none; }
+.home-mobile-menu[open] nav { position: absolute; right: 0; top: 100%; display: flex; flex-direction: column; align-items: stretch; gap: 0; min-width: 150px; padding: 8px; background: var(--background); border: 1px solid var(--border); }
+.home-mobile-menu nav :is(button, a) { display: flex; align-items: center; justify-content: space-between; min-height: 44px; padding-inline: 12px; text-align: left; }
+.home-mobile-menu nav :is(button, a):hover { color: var(--primary); }
+.home-menu-account { display: flex; flex-direction: column; border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+.home-menu-account .home-session-status { padding: 12px; white-space: normal; }
+.home-action-placeholder { display: inline-block; min-height: 32px; width: 190px; max-width: 100%; visibility: hidden; }
+.home-action-placeholder.primary, .home-action-placeholder.button { min-height: 46px; }
+.home-session-status { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; min-height: 44px; white-space: nowrap; }
+.home-session-feedback { display: flex; align-items: flex-start; gap: 10px; margin-top: 20px; font-size: 13px; line-height: 1.7; }
+.home-session-feedback > svg { flex-shrink: 0; margin-top: 3px; color: var(--primary); }
+.home-session-feedback p { margin: 0; }
+.home-session-error { border-left: 2px solid var(--highlight); padding-left: 14px; }
+.home-session-error > svg { color: var(--highlight); }
+.home-session-error strong { font-size: 14px; font-weight: 500; }
+.home-session-error p { margin-top: 4px; }
+.home-session-error .button { margin-top: 14px; min-height: 40px; }
 .home-account-nav > a { display: inline-flex; align-items: center; min-height: 44px; }
 .home-section-nav button:hover, .home-footer nav :is(a, button):hover { color: var(--primary); }
 .hero { display: grid; grid-template-columns: 1.2fr 1fr; align-items: end; gap: 64px; padding-block: 64px 52px; }
@@ -19,7 +38,8 @@
 .hero h1 span { color: var(--highlight); }
 .hero-introduction { max-width: 450px; padding-bottom: 5px; }
 .hero-introduction > p { font-size: 17px; line-height: 1.8; }
-.hero-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+.hero-actions { position: relative; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+.home-hero-session { position: absolute; top: 0; left: 0; }
 .hero-actions .button { min-height: 46px; font-size: 13px; }
 .hero-actions .ghost { padding-inline: 14px; }
 .source-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 28px; padding-block: 28px; border-bottom: 1px solid var(--border); }
@@ -236,7 +256,8 @@
   .home-page { padding-inline: 24px; }
   .home-nav { height: 70px; gap: 16px; }
   .home-nav .home-section-nav { display: none; }
-  .home-nav .home-account-nav { margin-left: auto; gap: 18px; }
+  .home-nav .home-mobile-menu { display: block; margin-left: auto; }
+  .home-nav .home-account-nav { display: none; }
   .home-nav .brand { font-size: 20px; }
   .home-nav .brand-symbol { width: 28px; height: 28px; }
   .home-nav .button { font-size: 12px; padding-inline: 14px; }

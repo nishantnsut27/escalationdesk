@@ -83,7 +83,7 @@ async def callback(request):
             raise HTTPException(400, "Sentry authorization expired or did not match your session. Start Connect Sentry again.")
         conn.execute("DELETE FROM sentry_oauth_states WHERE digest=%s", (state["digest"],))
     if params.get("error"):
-        return RedirectResponse(config.PUBLIC_URL + "/#connections?oauth=cancelled", status_code=303)
+        return RedirectResponse(config.PUBLIC_URL + "/connections?oauth=cancelled", status_code=303)
     installation, organization, code = params.get("installationId", ""), params.get("orgSlug", ""), params.get("code", "")
     if not INSTALLATION.fullmatch(installation) or not SLUG.fullmatch(organization) or not 1 <= len(code) <= 4096:
         raise HTTPException(400, "Sentry returned incomplete authorization information. Reconnect.")
@@ -117,7 +117,7 @@ async def callback(request):
                     (db.uid(), owner["id"], installation, organization, state["region"], encrypted, expiry, json.dumps(projects), db.now(), db.now()))
     except SentryError as exc:
         raise HTTPException(502, str(exc)) from None
-    return RedirectResponse(config.PUBLIC_URL + "/#connections?oauth=connected", status_code=303)
+    return RedirectResponse(config.PUBLIC_URL + "/connections?oauth=connected", status_code=303)
 
 
 async def check(request):
@@ -170,7 +170,7 @@ async def disconnect(request):
         conn.execute("DELETE FROM sentry_oauth_states WHERE user_id=%s", (row["user_id"],))
         conn.execute("UPDATE sentry_connections SET state='disconnected',credentials=NULL,expires_at=0,generation=generation+1 WHERE id=%s", (row["id"],))
         cancel_jobs(conn, row["id"])
-    return JSONResponse({"ok": True, "message": "Disconnected locally. You can also uninstall Escalation Desk in Sentry's integration settings."})
+    return JSONResponse({"ok": True, "message": "Disconnected locally. You can also uninstall TraceDesk in Sentry's integration settings."})
 
 
 async def webhook(request):

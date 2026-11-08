@@ -52,7 +52,7 @@ export default function LogsWorkspace() {
     selectedRecord.current?.scrollIntoView({ behavior: 'instant', block: 'start' })
   }
   function change(update: Record<string, string | number | null>, reset = true, replace = false) {
-    const next = new URLSearchParams(window.location.hash.split('?')[1] || '')
+    const next = new URLSearchParams(window.location.search)
     if (reset) { next.delete('offset'); next.delete('timeline_offset') }
     for (const [name, value] of Object.entries(update)) value == null || value === '' ? next.delete(name) : next.set(name, String(value))
     navigate('logs', '', Object.fromEntries(next), replace)
@@ -143,7 +143,7 @@ export default function LogsWorkspace() {
     if (id === evidenceId && selectedRecord.current) revealSelectedRecord()
     else change({ evidence: id, offset: null }, false)
   }
-  if (!scopePath && !evidenceId) return <EmptyState title="Choose saved evidence"><a href="#/collections">Open a collection</a> to search its observations, or follow a report citation.</EmptyState>
+  if (!scopePath && !evidenceId) return <EmptyState title="Choose saved evidence"><a href="/collections">Open a collection</a> to search its observations, or follow a report citation.</EmptyState>
   return <div className="logs-workspace"><PageHeading eyebrow="EVIDENCE WORKSPACE" title={details?.collection?.title || (runId ? 'Recorded run logs' : 'Inspect the evidence')} actions={<><Button variant="secondary" disabled={copying} aria-busy={copying || undefined} onClick={async () => { setCopying(true); try { await navigator.clipboard.writeText(window.location.href); setCopied(true); setTimeout(() => setCopied(false), 2000) } catch { setError('Copy the address from your browser to share this view.') } finally { setCopying(false) } }}>{copying ? <Spinner /> : copied ? <Check size={15} /> : <Copy size={15} />}{copied ? 'Link copied' : 'Copy view link'}</Button>{investigationId && <Button asChild variant="secondary"><a href={routeHref('investigations', investigationId)}><ArrowLeft size={15} />Back to report</a></Button>}</>}>Search the saved observations. Follow recorded relationships. Keep the source in view.</PageHeading>
     {error && <ErrorState error={error} retry={() => setRetry(value => value + 1)} />}
     <section className="panel log-overview">{sectionErrors.counts ? <ErrorState error={sectionErrors.counts} retry={() => setRetry(value => value + 1)} /> : !details ? <LoadingState layout="counts">Loading evidence counts…</LoadingState> : <div className="coverage-strip"><span><Layers3 size={15} /><strong>{details?.counts.observations.toLocaleString() ?? '—'}</strong> saved observations</span><span><strong>{details?.counts.services ?? '—'}</strong> observed services</span><span className={details?.counts.unknown_time_in_scope ? 'coverage-gap' : ''}><History size={14} />{details?.counts.unknown_time_in_scope ?? '—'} timestamps missing</span></div>}

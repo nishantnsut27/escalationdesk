@@ -6,7 +6,7 @@ import { Auth } from './auth'
 import Home, { DataUse } from './home'
 import { Brand, EmptyState, ErrorState, LoadingState } from './components/common'
 import { useLoadingMotion } from './components/loading'
-import { useRoute, navigate, destinationAfterAuth, isProtectedRoute } from './routes'
+import { useRoute, useAppNavigation, navigate, navigationEvent, type SessionStatus } from './routes'
 
 const Dashboard = lazy(() => import('./dashboard').then(module => ({ default: module.Dashboard })))
 const Errors = lazy(() => import('./dashboard').then(module => ({ default: module.Errors })))
@@ -19,69 +19,66 @@ const DemoWorkspace = lazy(() => import('./scenarios').then(module => ({ default
 const LogsWorkspace = lazy(() => import('./logs'))
 export { ReportView } from './assessments'
 
-const destinationKey = 'tracedesk:return-to'
-function rememberedDestination() { try { return sessionStorage.getItem(destinationKey) || '' } catch { return '' } }
-function rememberDestination(hash: string) { if (isProtectedRoute(hash)) { try { sessionStorage.setItem(destinationKey, hash) } catch { /* The current hash also retains the destination. */ } } }
-function clearDestination() { try { sessionStorage.removeItem(destinationKey) } catch { /* Storage can be disabled by the browser. */ } }
-function replaceHash(hash: string) { history.replaceState(null, '', hash); window.dispatchEvent(new HashChangeEvent('hashchange')) }
+function clearDestination() { try { sessionStorage.removeItem('tracedesk:return-to') } catch { /* Storage can be disabled by the browser. */ } }
 
 export default function App() {
   useLoadingMotion()
+  useAppNavigation()
   const route = useRoute()
-  const [user, setUser] = useState<User | null>(null), [initializing, setInitializing] = useState(true)
+  const [user, setUser] = useState<User | null>(null), [sessionStatus, setSessionStatus] = useState<SessionStatus>('pending')
+  const initializing = sessionStatus === 'pending'
   const [error, setError] = useState(''), [mobileNav, setMobileNav] = useState(false)
   const [authLink, setAuthLink] = useState(() => parseAuthenticationLink(window.location.hash))
+  const [authLinkRevision, setAuthLinkRevision] = useState(0)
   const [invalidAuthLink, setInvalidAuthLink] = useState(() => window.location.hash.startsWith('#auth/') && !parseAuthenticationLink(window.location.hash))
   const epoch = useRef(0), main = useRef<HTMLElement>(null), sidebar = useRef<HTMLElement>(null), lastPage = useRef(route.page)
 
-  const acceptSession = useCallback((value: Session, restore = true) => {
-    epoch.current++; setCsrf(value.csrf); setUser(value.user); setError('')
-    if (restore) {
-      const destination = destinationAfterAuth(window.location.hash, rememberedDestination(), value.user.read_only)
-      if (value.user.email_verified || value.user.read_only) clearDestination()
-      else rememberDestination(destination)
-      replaceHash(destination)
-    }
+  const acceptSession = useCallback((value: Session, explicit = true) => {
+    epoch.current++; setCsrf(value.csrf); setUser(value.user); setError(''); setSessionStatus('authenticated'); clearDestination()
+    if (explicit) navigate('dashboard', '', {}, true)
   }, [])
   const refreshSession = useCallback(async () => {
     const value = await api<Session>('/auth/me')
     acceptSession(value, false)
-    if (value.user.email_verified && rememberedDestination()) {
-      const destination = destinationAfterAuth('', rememberedDestination(), value.user.read_only)
-      clearDestination(); replaceHash(destination)
+    if (value.user.email_verified && user && !user.email_verified && !user.read_only) navigate('dashboard', '', {}, true)
+  }, [acceptSession, user])
+  const expireSession = useCallback(() => {
+    epoch.current++; setUser(null); setCsrf(''); setSessionStatus('anonymous'); setError('Your session expired. Sign in to open your dashboard.')
+  }, [])
+  const retrySession = useCallback(async () => {
+    const revision = ++epoch.current
+    setSessionStatus('pending'); setError('')
+    try {
+      const value = await api<Session>('/auth/me')
+      if (revision === epoch.current) acceptSession(value, false)
+    } catch (e) {
+      if (revision !== epoch.current) return
+      setUser(null); setCsrf('')
+      const anonymous = e instanceof ApiError && e.status === 401
+      setSessionStatus(anonymous ? 'anonymous' : 'error')
+      if (!anonymous) setError(userMessage(e))
     }
   }, [acceptSession])
-  const expireSession = useCallback(() => {
-    rememberDestination(window.location.hash)
-    epoch.current++; setUser(null); setCsrf(''); setError('Your session expired. Sign in to return to this view.')
-  }, [])
-
   useEffect(() => {
-    let alive = true
-    const revision = epoch.current
-    api<Session>('/auth/me').then(value => { if (alive && revision === epoch.current) acceptSession(value, false) })
-      .catch(e => { if (alive && !(e instanceof ApiError && e.status === 401)) setError(userMessage(e)) })
-      .finally(() => { if (alive) setInitializing(false) })
+    void retrySession()
     window.addEventListener('tracedesk:session-expired', expireSession)
-    return () => { alive = false; window.removeEventListener('tracedesk:session-expired', expireSession) }
-  }, [acceptSession, expireSession])
+    return () => { epoch.current++; window.removeEventListener('tracedesk:session-expired', expireSession) }
+  }, [retrySession, expireSession])
   useEffect(() => {
     function consume() {
       if (!window.location.hash.startsWith('#auth/')) return
       const link = parseAuthenticationLink(window.location.hash)
-      setAuthLink(link); setInvalidAuthLink(!link)
+      setAuthLink(link); setInvalidAuthLink(!link); setAuthLinkRevision(value => value + 1)
       // The one-time token lives only in component state after the link is opened.
-      replaceHash('#/account')
+      navigate('account', '', {}, true)
     }
-    consume(); window.addEventListener('hashchange', consume)
-    return () => window.removeEventListener('hashchange', consume)
+    consume()
+    for (const event of ['hashchange', 'popstate', navigationEvent]) window.addEventListener(event, consume)
+    return () => { for (const event of ['hashchange', 'popstate', navigationEvent]) window.removeEventListener(event, consume) }
   }, [])
   useEffect(() => {
-    if (!initializing && (!user || (!user.email_verified && !user.read_only))) rememberDestination(window.location.hash)
     if (user && ['login', 'signup', 'demo-login'].includes(route.page)) {
-      const destination = destinationAfterAuth('', rememberedDestination(), user.read_only)
-      if (user.email_verified || user.read_only) clearDestination()
-      replaceHash(destination)
+      navigate('dashboard', '', {}, true)
     }
     setMobileNav(false)
     if (lastPage.current !== route.page) { main.current?.focus(); window.scrollTo(0, 0); lastPage.current = route.page }
@@ -103,16 +100,19 @@ export default function App() {
     return () => { document.body.style.overflow = overflow; previous?.focus() }
   }, [mobileNav])
   async function logout() {
-    try { await api('/auth/logout', {}); epoch.current++; setUser(null); setCsrf(''); clearDestination(); navigate('login'); setError('') }
+    try { await api('/auth/logout', {}); epoch.current++; setUser(null); setCsrf(''); setSessionStatus('anonymous'); clearDestination(); navigate('login'); setError('') }
     catch (e) { if (e instanceof ApiError && e.status === 401) { expireSession(); navigate('login') } else setError(userMessage(e)) }
   }
   const exitAccount = () => { setAuthLink(null); setInvalidAuthLink(false); navigate('login') }
-  if (authLink || invalidAuthLink) return <AccountPage key={authLink?.token || 'invalid'} link={authLink || undefined} invalid={invalidAuthLink} onExit={exitAccount} onReset={() => { epoch.current++; setUser(null); setCsrf('') }} onVerified={() => {
-    void api<Session>('/auth/me').then(value => acceptSession(value)).catch(() => { setUser(null); setCsrf(''); navigate('login') }).finally(() => setAuthLink(null))
+  if (authLink || invalidAuthLink) return <AccountPage key={`${authLink?.purpose || 'invalid'}:${authLink?.token || ''}:${authLinkRevision}`} link={authLink || undefined} invalid={invalidAuthLink} onExit={exitAccount} onReset={() => { epoch.current++; setUser(null); setCsrf(''); setSessionStatus('anonymous') }} onVerified={() => {
+    void api<Session>('/auth/me').then(value => acceptSession(value)).catch(() => { epoch.current++; setUser(null); setCsrf(''); setSessionStatus('anonymous'); navigate('login') }).finally(() => setAuthLink(null))
   }} />
-  if (route.page === 'privacy') return <div className="public-detail"><Brand /><DataUse /><a className="text-link" href={user ? '#/dashboard' : '#/'}>Return to {user ? 'workspace' : 'TraceDesk'}</a></div>
-  if (!route.page) return <Home />
+  if (route.page === 'privacy') return <div className="public-detail"><Brand /><DataUse /><a className="text-link" href={user ? '/dashboard' : '/'}>Return to {user ? 'workspace' : 'TraceDesk'}</a></div>
+  if (!route.page) return <Home user={user} sessionStatus={sessionStatus} error={error} onRetry={() => void retrySession()} />
   if (initializing) return <div className="initializing"><Brand /><LoadingState cup>Opening your workspace…</LoadingState></div>
+  if (sessionStatus === 'error') return <div className="initializing"><Brand /><ErrorState error={error} retry={() => void retrySession()} /></div>
+  if (route.page === 'account') return <AccountPage invalid onExit={exitAccount} />
+  if (route.page === 'not-found') return <div className="public-detail"><Brand /><EmptyState title="This page is unavailable"><a href="/">Return to TraceDesk</a></EmptyState></div>
   if (!user) return <>{error && <div className="auth-notice"><ErrorState error={error} /></div>}<Auth mode={route.page === 'demo' ? 'demo-login' : route.page} onSession={acceptSession} /></>
   if (!user.read_only && !user.email_verified) return <VerifyAccountPage user={user} onRefresh={refreshSession} onLogout={logout} error={error} />
 
@@ -132,7 +132,7 @@ export default function App() {
     case 'demo': content = <DemoWorkspace slug={route.id} />; break
     case 'connections': content = user.read_only ? <EmptyState title="Read-only demonstration">Connections are available in a regular account.</EmptyState> : <ConnectionsWorkspace />; break
     case 'import': content = user.read_only ? <EmptyState title="Read-only demonstration">Import your own evidence using a regular account.</EmptyState> : <ImportWorkspace />; break
-    default: content = <EmptyState title="This page is unavailable"><a href="#/dashboard">Return to your dashboard</a> to open saved evidence.</EmptyState>
+    default: content = <EmptyState title="This page is unavailable"><a href="/dashboard">Return to your dashboard</a> to open saved evidence.</EmptyState>
   }
   return <WritePermission.Provider value={user.email_verified && !user.read_only}><div className="app-shell">
     <a className="skip-link" href="#main-content" onClick={event => { event.preventDefault(); main.current?.focus() }}>Skip to content</a>
@@ -149,10 +149,10 @@ export default function App() {
     }}>
       <div className="sidebar-brand"><Brand /><button className="icon-button mobile-only" aria-label="Close navigation" onClick={() => setMobileNav(false)}><X size={18} /></button></div>
       <div className="workspace-label"><span className="workspace-avatar">{user.read_only ? 'D' : user.name.charAt(0).toUpperCase()}</span><div><strong>{user.read_only ? 'Demo workspace' : 'Personal workspace'}</strong><span>{user.read_only ? 'Recorded · Read-only' : 'Your saved evidence'}</span></div></div>
-      <span className="nav-label">EXPLORER</span><nav aria-label="Workspace">{nav.map(({ page, label, icon: Icon }) => <Fragment key={page}>{page === 'connections' && <span className="nav-label nav-section-label">SOURCES</span>}<a href={'#/' + page} aria-current={route.page === page || (page === 'collections' && route.page === 'logs') ? 'page' : undefined}><Icon size={18} />{label}</a></Fragment>)}</nav>
-      {user.read_only && <a className={'demo-nav' + (route.page === 'demo' ? ' active' : '')} href="#/demo"><Layers3 size={17} />Recorded demo gallery</a>}
-      <div className="sidebar-bottom"><div className="snapshot-note"><ShieldCheck size={16} /><p>{user.read_only ? 'Reviewed recordings. Browsing does not start analysis.' : 'Saved snapshots. Investigate when you are ready.'}</p></div><div className="user-row"><span className="avatar">{user.name.charAt(0).toUpperCase()}</span><div><strong>{user.name}</strong><span>{user.email}</span></div><button className="icon-button" aria-label="Sign out" onClick={() => void logout()}><LogOut size={16} /></button></div></div>
+      <span className="nav-label">EXPLORER</span><nav aria-label="Workspace">{nav.map(({ page, label, icon: Icon }) => <Fragment key={page}>{page === 'connections' && <span className="nav-label nav-section-label">SOURCES</span>}<a href={'/' + page} aria-current={route.page === page || (page === 'collections' && route.page === 'logs') ? 'page' : undefined}><Icon size={18} />{label}</a></Fragment>)}</nav>
+      {user.read_only && <a className={'demo-nav' + (route.page === 'demo' ? ' active' : '')} href="/demo"><Layers3 size={17} />Recorded demo gallery</a>}
+      <div className="sidebar-bottom"><div className="snapshot-note"><ShieldCheck size={16} /><p>{user.read_only ? 'Reviewed recordings. Browsing does not start analysis.' : 'Saved snapshots. Investigate when you are ready.'}</p></div><div className="user-row"><span className="avatar">{user.name.charAt(0).toUpperCase()}</span><div><strong>{user.name}</strong><span>{user.read_only ? 'Recorded demo account' : user.email}</span></div><button className="icon-button" aria-label="Sign out" onClick={() => void logout()}><LogOut size={16} /></button></div></div>
     </aside><div className="main-shell" inert={mobileNav}><header className="topbar"><div><button className="icon-button mobile-only" aria-label="Open navigation" aria-expanded={mobileNav} aria-controls="workspace-navigation" onClick={() => setMobileNav(!mobileNav)}><Menu size={20} /></button><span>Workspace</span><ChevronRight size={13} /><strong>{title}</strong></div><span className="connection-pill"><i />{user.read_only ? 'Recorded demonstration' : 'Saved evidence'}</span></header>
-      <main ref={main} id="main-content" tabIndex={-1} key={user.id}>{error && <div className="global-error"><ErrorState error={error} /><button className="icon-button" aria-label="Dismiss message" onClick={() => setError('')}><X size={16} /></button></div>}<Suspense fallback={<LoadingState layout={route.page === 'dashboard' ? 'dashboard' : route.page === 'errors' ? 'errors' : route.page === 'collections' ? route.id ? 'collection' : 'cards' : route.page === 'demo' ? 'demo' : route.page === 'investigations' && !route.id ? 'investigations' : 'detail'} />}>{content}</Suspense><footer className="page-footer"><span>saved snapshots / manual investigation</span><a href="#/privacy">Data use</a></footer></main>
+      <main ref={main} id="main-content" tabIndex={-1} key={user.id}>{error && <div className="global-error"><ErrorState error={error} /><button className="icon-button" aria-label="Dismiss message" onClick={() => setError('')}><X size={16} /></button></div>}<Suspense fallback={<LoadingState layout={route.page === 'dashboard' ? 'dashboard' : route.page === 'errors' ? 'errors' : route.page === 'collections' ? route.id ? 'collection' : 'cards' : route.page === 'demo' ? 'demo' : route.page === 'investigations' && !route.id ? 'investigations' : 'detail'} />}>{content}</Suspense><footer className="page-footer"><span>saved snapshots / manual investigation</span><a href="/privacy">Data use</a></footer></main>
     </div></div></WritePermission.Provider>
 }

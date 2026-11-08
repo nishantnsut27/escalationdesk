@@ -43,7 +43,7 @@ Demo Account browses saved reports without provider calls. Recorded history reta
 - Structured JSONL logs, measured operation spans carrying W3C trace/parent IDs, and service metric snapshots.
 - Detection after three consecutive failed requests, one incident per run and verified automatic recovery.
 - Read-only evidence tools, deterministic analysis, evidence-reference validation and saved reports.
-- A dark React/TypeScript evidence dashboard, durable hash routes and dedicated stacked log workspace with severity histograms, chronological events and recorded React Flow span relationships.
+- A dark React/TypeScript evidence dashboard, clean URLs with legacy hash-link compatibility and a dedicated stacked log workspace with severity histograms, chronological events and recorded React Flow span relationships.
 - Typed LangGraph investigation and saved-evidence supplement paths, failure-focused excerpts, strict source citations, bounded quota waits and retained attempts.
 - Owned pasted/file log imports with coverage and redaction details, arbitrary service names and retained source content.
 - Bounded Jev classification and observation priorities through OpenRouter, separate provider usage and visible Groq-only fallback.
@@ -120,6 +120,8 @@ For browser verification, use [examples/import-check.jsonl](examples/import-chec
 ## Hosted deployment
 
 The configured frontend is **https://tracedesk.nishantraj.me** on Vercel; the backend is **https://api.tracedesk.nishantraj.me** on Render with the existing Neon PostgreSQL database. [vercel.json](vercel.json) builds the Vite frontend and forwards `/api/*` to Render, retaining browser sessions on the frontend domain and disabling API rewrite caching. [render.yaml](render.yaml) records the free Python service, one process, custom API domain and `/api/health` check. For an already-created Render service, apply these settings to that service; creating a separate Blueprint would create another backend.
+
+For the clean URL rollout, release the compatible frontend first, then update the existing Render backend that generates email links and Sentry callback destinations. Both hosts serve the app shell for recognized GET/HEAD routes such as `/dashboard`, `/collections/:id` and `/logs`; API errors and missing assets retain their normal responses. Old hash routes and emailed account links remain supported. Explicit regular and demo sign-in opens `/dashboard`, while an existing session retains directly opened citations and filters. New verification/reset links use `/account#auth/...`; the token is captured in memory and removed from the address before explicit confirmation.
 
 Use the repository root on both hosts. Render's build command is `pip install -r requirements.txt`; its start command is:
 

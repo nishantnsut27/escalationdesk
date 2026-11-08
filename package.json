@@ -11,7 +11,8 @@
     "test:browser": "node tests/browser_acceptance.mjs",
     "test:home": "node tests/homepage_acceptance.mjs",
     "test:effects": "node tests/effects_acceptance.mjs",
-    "test:loading": "node tests/loading_acceptance.mjs"
+    "test:loading": "node tests/loading_acceptance.mjs",
+    "test:routing": "node tests/routing_acceptance.mjs"
   },
   "dependencies": {
     "@radix-ui/react-slot": "1.5.0",

@@ -5,7 +5,7 @@ import { sourceDate } from '../lib/time'
 import { Badge } from './ui/badge'
 import { CupLoader } from './ui/cup-loader'
 import { LayoutSkeleton, type LoadingLayout } from './loading'
-export function Brand() { return <a className="brand" href="#/" aria-label="TraceDesk home"><span className="brand-symbol"><Terminal size={21} /></span><span>TraceDesk</span></a> }
+export function Brand() { return <a className="brand" href="/" aria-label="TraceDesk home"><span className="brand-symbol"><Terminal size={21} /></span><span>TraceDesk</span></a> }
 export function Spinner() { return <span className="inline-spinner" aria-hidden="true"><LoaderCircle size={16} className="spin" /></span> }
 export function StatusBadge({ state }: { state: string }) {
   const label = state.replaceAll('_', ' ')

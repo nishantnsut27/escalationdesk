@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useId, useState, type FormEvent, 
 import { ArrowLeft, Eye, EyeOff, LoaderCircle, Mail, ShieldCheck } from 'lucide-react'
 import { api, type User } from './api'
 import { Spinner } from './components/common'
+import { AuthFieldIcon } from './components/auth-field'
 
 export type AuthenticationLink = { purpose: 'verify' | 'reset'; token: string }
 export const WritePermission = createContext(false)
@@ -11,10 +12,11 @@ export function parseAuthenticationLink(fragment: string): AuthenticationLink | 
   return match ? { purpose: match[1] as 'verify' | 'reset', token: match[2] } : null
 }
 
-export function PasswordField({ label, ...props }: InputHTMLAttributes<HTMLInputElement> & { label: string }) {
+export function PasswordField({ label, recessed = false, ...props }: InputHTMLAttributes<HTMLInputElement> & { label: string; recessed?: boolean }) {
   const id = useId()
   const [visible, setVisible] = useState(false)
-  return <div className="password-field"><label htmlFor={id}>{label}</label><div className="password-input">
+  return <div className="password-field"><label htmlFor={id}>{label}</label><div className={'password-input' + (recessed ? ' auth-input-well' : '')} data-disabled={props.disabled || undefined}>
+    {recessed && <AuthFieldIcon kind="password" />}
     <input {...props} id={id} type={visible ? 'text' : 'password'} />
     <button type="button" disabled={props.disabled} aria-label={`${visible ? 'Hide' : 'Show'} ${label.toLowerCase()}`} aria-pressed={visible} aria-controls={id} onClick={() => setVisible(value => !value)}>{visible ? <EyeOff size={18} /> : <Eye size={18} />}</button>
   </div></div>

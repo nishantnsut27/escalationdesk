@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Cable, ExternalLink, LoaderCircle, RefreshCw, Unplug, Download } from 'lucide-react'
 import { api, type SentryConnection, type SentryImport, type SentryWorkspace } from './api'
-import { PageHeading, LoadingState, StatusBadge, Spinner } from './components/common'
+import { PageHeading, LoadingState, StatusBadge, ErrorState } from './components/common'
+import { Button } from './components/ui/button'
+import { SentryConnectionEmptyState } from './components/sentry-empty-state'
 import { CupLoader } from './components/ui/cup-loader'
 import { ProgressBar } from './components/ui/progress-bar'
 import { navigate } from './routes'
@@ -12,6 +14,12 @@ import { useWritePermission } from './account'
 const active = ['queued', 'running', 'rate_limited']
 const incomplete = ['failed', 'partial', 'interrupted', 'cancelled']
 const localTime = (date: Date) => new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+
+export function isSentryWorkspace(value: unknown): value is SentryWorkspace {
+  if (!value || typeof value !== 'object') return false
+  const data = value as Partial<SentryWorkspace>
+  return typeof data.configured === 'boolean' && typeof data.public_url === 'string' && Array.isArray(data.connections) && Array.isArray(data.imports)
+}
 
 export function ConnectionRegion({ region }: { region: SentryConnection['region'] }) {
   return <p>Connection region: {region === 'eu' ? 'European Union (EU)' : 'United States (US)'}.</p>
@@ -57,9 +65,8 @@ function ImportForm({ connection, disabled, onSubmit }: { connection: SentryConn
   }
   const toggle = (values: string[], id: string) => values.includes(id) ? values.filter(v => v !== id) : [...values, id]
   return <form className="sentry-import-form" onSubmit={e => void submit(e)}>
-    <fieldset disabled={disabled}><legend>Projects</legend>{connection.projects.map(project => <label className="sentry-checkbox" key={project.id}><input type="checkbox" checked={projects.includes(project.id)} onChange={() => setProjects(toggle(projects, project.id))} />{project.name} <small>{project.slug}</small></label>)}</fieldset>
-    {!connection.projects.length && <p>No authorized projects found. Create a project in Sentry, then check access.</p>}
-    <fieldset disabled={disabled}><legend>Evidence to import</legend>{['errors', 'logs', 'spans'].map(dataset => <label className="sentry-checkbox" key={dataset}><input type="checkbox" checked={datasets.includes(dataset)} onChange={() => setDatasets(toggle(datasets, dataset))} />{dataset}<small>{connection.capabilities[dataset]?.state || 'Access not checked'}</small></label>)}</fieldset>
+    {connection.projects.length ? <fieldset disabled={disabled}><legend>Projects</legend>{connection.projects.map(project => <label className="sentry-checkbox" key={project.id}><input type="checkbox" checked={projects.includes(project.id)} onChange={() => setProjects(toggle(projects, project.id))} />{project.name} <small>{project.slug}</small></label>)}</fieldset> : <SentryConnectionEmptyState variant="projects" />}
+    <fieldset disabled={disabled}><legend>Evidence to import</legend><div className="sentry-dataset-options">{['errors', 'logs', 'spans'].map(dataset => <label className="sentry-checkbox" key={dataset}><input type="checkbox" checked={datasets.includes(dataset)} onChange={() => setDatasets(toggle(datasets, dataset))} /><span>{dataset}</span><small>{connection.capabilities[dataset]?.state || 'Access not checked'}</small></label>)}</div></fieldset>
     {Object.values(connection.capabilities).some(c => c.project) && <p className="report-note">Access check samples the first authorized project. Each selected project is checked again during import; an empty dataset may receive evidence later.</p>}
     <div className="import-fields"><label>Start (your local time)<input type="datetime-local" required value={start} onChange={e => setStart(e.target.value)} disabled={disabled} /></label><label>End (your local time)<input type="datetime-local" required value={end} onChange={e => setEnd(e.target.value)} disabled={disabled} /></label></div>
     <label>Collection title<input required maxLength={120} value={title} onChange={e => setTitle(e.target.value)} disabled={disabled} /></label>
@@ -76,10 +83,20 @@ export function ConnectionsWorkspace() {
   const [region, setRegion] = useState('us')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState('')
   const mounted = useRef(false)
-  const refresh = useCallback(async () => {
-    const value = await api<SentryWorkspace>('/connections/sentry')
-    if (mounted.current) { setData(value); setSelected(id => id || value.connections[0]?.id || '') }
+  const refreshInFlight = useRef<Promise<void> | null>(null)
+  const refresh = useCallback(() => {
+    if (refreshInFlight.current) return refreshInFlight.current
+    const request = api<unknown>('/connections/sentry').then(value => {
+      if (!isSentryWorkspace(value)) throw new Error('Sentry connections could not be loaded. Try again.')
+      if (mounted.current) {
+        setData(value); setLoadError('')
+        setSelected(id => value.connections.some(connection => connection.id === id) ? id : value.connections[0]?.id || '')
+      }
+    }).finally(() => { refreshInFlight.current = null })
+    refreshInFlight.current = request
+    return request
   }, [])
   const fail = useCallback((e: unknown) => {
     if (!mounted.current) return
@@ -87,9 +104,13 @@ export function ConnectionsWorkspace() {
   }, [])
   useEffect(() => {
     mounted.current = true
-    const stop = poll(() => refresh().catch(fail), 4000)
+    const stop = poll(() => refresh().catch(e => { if (mounted.current) setLoadError(e instanceof Error ? e.message : 'Sentry connections could not be loaded. Try again.') }), 4000)
     return () => { mounted.current = false; stop() }
-  }, [refresh, fail])
+  }, [refresh])
+  async function retryConnections() {
+    setLoadError('')
+    try { await refresh() } catch (e) { if (mounted.current) setLoadError(e instanceof Error ? e.message : 'Sentry connections could not be loaded. Try again.') }
+  }
   async function action(path: string, body: unknown = {}) {
     setBusy(true); setError('')
     try { await api(path, body); await refresh() } catch (e) { fail(e) } finally { if (mounted.current) setBusy(false) }
@@ -103,12 +124,14 @@ export function ConnectionsWorkspace() {
   }
   const current = data?.connections.find(c => c.id === selected)
   const activeImport = data?.imports.some(item => active.includes(item.state))
-  return <div className="connections-workspace"><PageHeading eyebrow="CONNECTIONS" title="Connections">Connect Sentry, select a time window and save the observations you need.</PageHeading>
-    <SentrySetup configured={data?.configured || false} publicUrl={data?.public_url || ''} />
+  return <div className="connections-workspace"><PageHeading eyebrow="CONNECTIONS" title="Connections" actions={<div className="connection-header-actions"><label>Region for new authorization<select value={region} onChange={e => setRegion(e.target.value)} disabled={busy || !data}><option value="us">United States</option><option value="eu">European Union</option></select></label><Button onClick={() => void connect()} disabled={!canWrite || busy || !data?.configured} aria-busy={busy || undefined}>{busy ? <LoaderCircle size={16} className="spin" /> : <Cable size={16} />}Connect Sentry</Button></div>}>Connect Sentry, select a time window and save the observations you need.</PageHeading>
     {error && <p className="import-error" role="alert">{error}</p>}
-    {!data && !error && <LoadingState>Loading Sentry connections…</LoadingState>}
-    <section className="import-panel"><div className="sentry-actions"><label>Region for new authorization<select value={region} onChange={e => setRegion(e.target.value)} disabled={busy}><option value="us">United States</option><option value="eu">European Union</option></select></label><button className="button primary" onClick={() => void connect()} disabled={!canWrite || busy || !data?.configured}>{busy ? <LoaderCircle size={16} className="spin" /> : <Cable size={16} />}Connect Sentry</button></div>
-      {data && !data.connections.length && <p>No Sentry connections yet. Choose the region shown in your Sentry organization settings, then authorize access.</p>}
+    {loadError && <ErrorState error={loadError} retry={() => void retryConnections()} />}
+    {!data && !loadError && <LoadingState>Loading Sentry connections…</LoadingState>}
+    {data && <>
+      {!data.connections.length && <SentryConnectionEmptyState variant={data.configured ? 'empty' : 'setup'} />}
+      <details className="sentry-setup-details"><summary>Connection setup &amp; data use</summary><SentrySetup configured={data.configured} publicUrl={data.public_url} /></details>
+    {!!data.connections.length && <section className="import-panel">
       {!!data?.connections.length && <label>Connection<select value={selected} onChange={e => setSelected(e.target.value)}>{data.connections.map(c => <option key={c.id} value={c.id}>{c.organization} / {c.region.toUpperCase()} / {c.state}</option>)}</select></label>}
       {current && <><div className="section-heading"><h2>{current.organization}</h2><StatusBadge state={current.state} /></div>
         <ConnectionRegion region={current.region} />
@@ -117,7 +140,8 @@ export function ConnectionsWorkspace() {
         <div className="sentry-actions"><button className="button secondary" disabled={!canWrite || busy || current.state !== 'connected'} onClick={() => void action(`/connections/sentry/${current.id}/check`)}><RefreshCw size={15} />Check access</button><button className="button secondary" disabled={!canWrite || busy || current.state === 'disconnected'} onClick={() => void action(`/connections/sentry/${current.id}/disconnect`)}><Unplug size={15} />Disconnect</button></div>
         {current.state !== 'connected' ? <p>Use Connect Sentry to authorize this organization again. Saved snapshots remain readable. Local disconnect does not uninstall the integration in Sentry.</p> : <ImportForm key={current.id} connection={current} disabled={!canWrite || busy || !!activeImport} onSubmit={body => action(`/connections/sentry/${current.id}/imports`, body)} />}
       </>}
-    </section>
+    </section>}
     <section className="import-panel"><div className="section-heading"><h2>Recent imports</h2><span>Saved snapshots</span></div>{data?.imports.map(item => <SentryImportCard key={item.id} item={item} busy={busy} onOpen={() => navigate('collections', item.collection_id)} onAction={kind => void action(`/sentry-imports/${item.id}/${kind}`)} />)}{data && !data.imports.length && <p>Your imports will appear here. Analysis starts only when you click Investigate on saved evidence.</p>}</section>
+    </>}
   </div>
 }

@@ -27,7 +27,7 @@ def issue(user, purpose):
         expires = stamp + (86400 if purpose == "verify" else 1800)
         token_digest = auth.digest(token)
         conn.execute("INSERT INTO auth_tokens(digest,user_id,purpose,created_at,expires) VALUES(%s,%s,%s,%s,%s)", (token_digest,user["id"],purpose,stamp,expires))
-        link = config.PUBLIC_URL + "/#auth/"+purpose+"/"+token
+        link = config.PUBLIC_URL + "/account#auth/"+purpose+"/"+token
         text = ("Confirm your email address for TraceDesk. This link expires in 24 hours.\n\n" if purpose == "verify" else
                 "Reset your TraceDesk password. This link expires in 30 minutes.\n\n")
         text += link + "\n\nOpen the link and confirm the action. If you did not request this email, you can ignore it."

@@ -1,5 +1,8 @@
-import { ArrowRight, ArrowUpRight, Cable, FileCheck2, FileText, GitBranch, History, Layers3, LockKeyhole, Play, Plus, Search } from 'lucide-react'
-import { Brand } from './components/common'
+import { ArrowRight, ArrowUpRight, Cable, FileCheck2, FileText, GitBranch, History, Layers3, LockKeyhole, Menu, Plus, Search, ShieldCheck, TriangleAlert } from 'lucide-react'
+import { useRef } from 'react'
+import type { User } from './api'
+import type { SessionStatus } from './routes'
+import { Brand, Spinner } from './components/common'
 import { FooterWordmark } from './components/brand-effects'
 import { Button } from './components/ui/button'
 import { FeatureCarousel } from './components/ui/feature-carousel'
@@ -36,24 +39,48 @@ const questions = [
   ['How is my evidence processed?', 'An explicit investigation sends selected excerpts to external AI providers. Common credential patterns are redacted, but you should review the evidence first. Browsing, importing, and opening reports do not start analysis.'],
 ]
 
-export default function Home() {
-  return <div className="home-surface"><div className="home-page">
+export default function Home({ user, sessionStatus, error, onRetry }: { user: User | null; sessionStatus: SessionStatus; error?: string; onRetry: () => void }) {
+  const menu = useRef<HTMLDetailsElement>(null)
+  const signedIn = sessionStatus === 'authenticated' && !!user
+  const unverified = signedIn && !user.email_verified && !user.read_only
+  function action(guestLabel: string, guestPage: string, secondary = false, style = 'text-link') {
+    if (sessionStatus === 'error') return null
+    if (sessionStatus === 'pending') return <span className={`home-action-placeholder ${style}`} aria-hidden="true" />
+    const label = signedIn ? secondary ? unverified ? 'Verify your email' : user.read_only ? 'Browse recorded demos' : 'View saved evidence' : 'Open Dashboard' : guestLabel
+    const href = signedIn ? secondary && !unverified ? user.read_only ? '/demo' : '/collections' : '/dashboard' : '/' + guestPage
+    const link = <a className={style === 'primary' ? undefined : style} href={href}>{label}{style === 'primary' ? <ArrowRight size={15} /> : <ArrowUpRight size={14} />}</a>
+    return style === 'primary' ? <Button asChild>{link}</Button> : link
+  }
+  function section(label: string) {
+    return <button key={label} onClick={() => { if (menu.current) menu.current.open = false; scrollToSection(label.toLowerCase()) }}>{label}</button>
+  }
+  function menuAccount() {
+    if (sessionStatus === 'pending') return <span className="home-session-status"><Spinner />Checking your session…</span>
+    if (sessionStatus === 'error') return null
+    return signedIn ? <a href="/dashboard">Dashboard<ArrowUpRight size={14} /></a> : <><a href="/login">Sign in</a><a href="/signup">Create account<ArrowUpRight size={14} /></a></>
+  }
+  return <div className="home-surface"><div className="home-page" data-session-status={sessionStatus}>
     <a className="skip-link" href="#main-content" onClick={event => { event.preventDefault(); scrollToSection('main-content') }}>Skip to content</a>
-    <header className="home-nav"><Brand /><nav className="home-section-nav" aria-label="Homepage sections">{['Features', 'Workflow', 'FAQ'].map(label => <button key={label} onClick={() => scrollToSection(label.toLowerCase())}>{label}</button>)}</nav><nav className="home-account-nav" aria-label="Public navigation"><a href="#/login">Sign in</a><Button asChild><a href="#/signup">Create account<ArrowUpRight size={14} /></a></Button></nav></header>
+    <header className="home-nav"><Brand /><nav className="home-section-nav" aria-label="Homepage sections">{['Features', 'Workflow', 'FAQ'].map(section)}</nav><details ref={menu} className="home-mobile-menu" onKeyDown={event => { if (event.key === 'Escape' && menu.current) { menu.current.open = false; menu.current.querySelector('summary')?.focus() } }}><summary aria-label="Homepage menu"><Menu size={18} /></summary><nav aria-label="Mobile homepage sections">{['Features', 'Workflow', 'FAQ'].map(section)}{sessionStatus !== 'error' && <div className="home-menu-account">{menuAccount()}</div>}</nav></details><nav className="home-account-nav" aria-label={signedIn ? 'Account navigation' : 'Public navigation'}>{sessionStatus === 'pending' ? <span className="home-session-status"><Spinner />Checking your session…</span> : sessionStatus === 'error' ? null : signedIn ? <Button asChild><a href="/dashboard">Dashboard<ArrowUpRight size={14} /></a></Button> : <><a href="/login">Sign in</a><Button asChild><a href="/signup">Create account<ArrowUpRight size={14} /></a></Button></>}</nav></header>
     <main id="main-content" tabIndex={-1}>
-      <section className="hero"><div className="hero-copy"><span className="eyebrow"><span className="home-signal" />FOLLOW THE EVIDENCE</span><h1>Every failure<br /><span>leaves a trail.</span></h1></div><div className="hero-introduction"><p>Bring your application logs together. Follow the failure, inspect the assessment, and open the evidence behind it.</p><div className="hero-actions"><Button asChild><a href="#/signup">Create workspace<ArrowRight size={15} /></a></Button><a className="button ghost" href="#/demo-login"><Play size={13} />Open recorded demo</a></div></div></section>
+      <section className="hero"><div className="hero-copy"><span className="eyebrow"><span className="home-signal" />FOLLOW THE EVIDENCE</span><h1>Every failure<br /><span>leaves a trail.</span></h1></div><div className="hero-introduction"><p>Bring your application logs together. Follow the failure, inspect the assessment, and open the evidence behind it.</p>
+        {sessionStatus === 'error' && <div className="home-session-feedback home-session-error" role="alert"><TriangleAlert size={18} aria-hidden="true" /><div><strong>Your session couldn’t be checked.</strong><p>Retry to load your account actions.</p><Button variant="secondary" onClick={onRetry}>Try again<ArrowRight size={14} /></Button></div></div>}
+        {unverified && <div className="home-session-feedback" role="status"><ShieldCheck size={18} aria-hidden="true" /><p>Verify your email to open your workspace. Dashboard will guide you through verification.</p></div>}
+        {sessionStatus === 'anonymous' && error && <p className="home-session-feedback" role="status">{error}</p>}
+        {sessionStatus !== 'error' && <div className="hero-actions">{action('Create workspace', 'signup', false, 'primary')}{action('Open recorded demo', 'demo-login', true, 'button ghost')}{sessionStatus === 'pending' && <span className="home-session-status home-hero-session" role="status"><Spinner />Checking your session…</span>}</div>}
+      </div></section>
       <WorkflowPreview />
       <div className="source-strip"><span>START WITH YOUR EVIDENCE</span><span><FileText size={15} />Log files</span><span><Layers3 size={15} />Pasted logs</span><span><Cable size={15} />Sentry snapshots</span><span className="source-strip-note">Your logs. Your service names.</span></div>
       <section className="home-features" id="features" tabIndex={-1} aria-labelledby="features-title"><div className="home-section-heading"><div><span className="eyebrow">01 / THE WORKSPACE</span><h2 id="features-title">Less searching.<br />More understanding.</h2></div><p>From the first error to the evidence behind it. The tools to collect, connect, and inspect a failure, together in one workspace.</p></div><div className="home-feature-grid">{features.map(({ icon: Icon, label, title, text, detail }) => <article key={label}><span className="home-feature-label"><Icon size={17} />{label}</span><h3>{title}</h3><p>{text}</p><span className="home-feature-detail"><ArrowUpRight size={13} />{detail}</span></article>)}</div></section>
-      <section className="home-workflow" id="workflow" tabIndex={-1} aria-labelledby="workflow-title"><div className="home-section-heading"><div><span className="eyebrow">02 / HOW IT WORKS</span><h2 id="workflow-title">A shorter path<br />through the logs.</h2></div><a className="text-link" href="#/demo-login">Inspect a recorded investigation<ArrowUpRight size={14} /></a></div><div className="workflow-columns">{[
+      <section className="home-workflow" id="workflow" tabIndex={-1} aria-labelledby="workflow-title"><div className="home-section-heading"><div><span className="eyebrow">02 / HOW IT WORKS</span><h2 id="workflow-title">A shorter path<br />through the logs.</h2></div>{action('Inspect a recorded investigation', 'demo-login', true)}</div><div className="workflow-columns">{[
         ['01', 'Collect', 'Import logs or a Sentry snapshot. Review source coverage before you investigate.'],
         ['02', 'Investigate', 'Read the assessed mechanism, supporting observations, and what remains unknown.'],
         ['03', 'Inspect', 'Follow citations into searchable logs, request flow, and a chronological timeline.'],
       ].map(([number, title, text]) => <article key={number}><span className="workflow-number">{number}<ArrowRight size={18} /></span><h3>{title}</h3><p>{text}</p></article>)}</div></section>
-      <section className="home-faq" id="faq" tabIndex={-1} aria-labelledby="faq-title"><div><span className="eyebrow">03 / BEFORE YOU START</span><h2 id="faq-title">A little clarity.<br />Before you dive in.</h2><p>Saved evidence. Explicit investigation. Results you can inspect.</p><a className="text-link" href="#/demo-login">Explore the recorded demo<ArrowUpRight size={14} /></a></div><div className="home-questions">{questions.map(([question, answer], index) => <details key={question} open={index === 0}><summary>{question}<Plus size={16} aria-hidden="true" /></summary><p>{answer}</p></details>)}</div></section>
+      <section className="home-faq" id="faq" tabIndex={-1} aria-labelledby="faq-title"><div><span className="eyebrow">03 / BEFORE YOU START</span><h2 id="faq-title">A little clarity.<br />Before you dive in.</h2><p>Saved evidence. Explicit investigation. Results you can inspect.</p>{action('Explore the recorded demo', 'demo-login', true)}</div><div className="home-questions">{questions.map(([question, answer], index) => <details key={question} open={index === 0}><summary>{question}<Plus size={16} aria-hidden="true" /></summary><p>{answer}</p></details>)}</div></section>
       <DataUse />
-      <section className="home-cta"><div><span className="eyebrow">YOUR NEXT INVESTIGATION</span><h2>Bring a failure<br /><span>worth investigating.</span></h2></div><div><Button asChild><a href="#/signup">Create account<ArrowRight size={15} /></a></Button><a className="text-link" href="#/demo-login">Start with a recorded demo<ArrowUpRight size={14} /></a></div></section>
+      <section className="home-cta"><div><span className="eyebrow">YOUR NEXT INVESTIGATION</span><h2>Bring a failure<br /><span>worth investigating.</span></h2></div><div>{action('Create account', 'signup', false, 'primary')}{action('Start with a recorded demo', 'demo-login', true)}</div></section>
     </main>
-    <footer className="home-footer"><div className="home-footer-top"><div className="home-footer-about"><Brand /><p>Follow the failure.<br />Keep the evidence close.</p><span><Layers3 size={13} />Built around saved evidence</span></div><nav aria-label="Explore"><span className="eyebrow">EXPLORE</span><button onClick={() => scrollToSection('features')}>Features</button><button onClick={() => scrollToSection('workflow')}>Workflow</button><a href="#/demo-login">Recorded demo</a></nav><nav aria-label="Account"><span className="eyebrow">ACCOUNT</span><a href="#/signup">Create account</a><a href="#/login">Sign in</a></nav><nav aria-label="Resources"><span className="eyebrow">RESOURCES</span><button onClick={() => scrollToSection('faq')}>FAQ</button><a href="#/privacy">Data use<ArrowUpRight size={12} /></a></nav></div><div className="home-footer-bottom"><span>TraceDesk · Evidence-led investigation.</span><span>From what happened to what comes next.</span></div><FooterWordmark /></footer>
+    <footer className="home-footer"><div className="home-footer-top"><div className="home-footer-about"><Brand /><p>Follow the failure.<br />Keep the evidence close.</p><span><Layers3 size={13} />Built around saved evidence</span></div><nav aria-label="Explore"><span className="eyebrow">EXPLORE</span><button onClick={() => scrollToSection('features')}>Features</button><button onClick={() => scrollToSection('workflow')}>Workflow</button>{action('Recorded demo', 'demo-login', true)}</nav><nav aria-label="Account"><span className="eyebrow">ACCOUNT</span>{action('Create account', 'signup')}{action('Sign in', 'login', signedIn)}</nav><nav aria-label="Resources"><span className="eyebrow">RESOURCES</span><button onClick={() => scrollToSection('faq')}>FAQ</button><a href="/privacy">Data use<ArrowUpRight size={12} /></a></nav></div><div className="home-footer-bottom"><span>TraceDesk · Evidence-led investigation.</span><span>From what happened to what comes next.</span></div><FooterWordmark /></footer>
   </div></div>
 }

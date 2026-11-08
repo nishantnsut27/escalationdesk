@@ -4,26 +4,45 @@
   "buildCommand": "npm run build",
   "installCommand": "npm ci",
   "outputDirectory": "dist",
-  "redirects": [
+  "routes": [
     {
-      "source": "/:path*",
-      "has": [{ "type": "host", "value": "escalationdesk.vercel.app" }],
-      "destination": "https://tracedesk.nishantraj.me/:path*",
-      "permanent": true
-    }
-  ],
-  "rewrites": [
+      "src": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "escalationdesk.vercel.app"
+        }
+      ],
+      "headers": {
+        "Location": "https://tracedesk.nishantraj.me/$1"
+      },
+      "status": 308
+    },
     {
-      "source": "/api/:path*",
-      "destination": "https://api.tracedesk.nishantraj.me/api/:path*"
-    }
-  ],
-  "headers": [
+      "src": "/api(?:/(.*))?",
+      "dest": "https://api.tracedesk.nishantraj.me/api/$1",
+      "headers": {
+        "x-vercel-enable-rewrite-caching": "0"
+      }
+    },
     {
-      "source": "/api/:path*",
-      "headers": [
-        { "key": "x-vercel-enable-rewrite-caching", "value": "0" }
-      ]
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(login|signup|demo-login|forgot|account|privacy|dashboard|collections|errors|investigations|connections|import|logs|demo|overview|history|evidence|imports)/?",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "dest": "/index.html"
+    },
+    {
+      "src": "/(collections|investigations|demo|history|evidence)/[^/]+/?",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "dest": "/index.html"
     }
   ]
 }
