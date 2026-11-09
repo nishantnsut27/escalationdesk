@@ -11,6 +11,7 @@ export function userMessage(error: unknown, fallback = 'The request could not be
 let csrf = ''
 export function setCsrf(value: string) { csrf = value }
 export async function api<T>(path: string, body?: unknown, method: 'POST' | 'PUT' = 'POST'): Promise<T> {
+  const requestSession = csrf
   const response = await fetch('/api' + path, {
     credentials: 'same-origin',
     ...(body !== undefined ? { method, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(body) } : {}),
@@ -19,7 +20,7 @@ export async function api<T>(path: string, body?: unknown, method: 'POST' | 'PUT
   try { data = await response.json() }
   catch { throw new ApiError('The server could not complete this request. Please try again shortly.', response.status) }
   if (!response.ok) {
-    if (response.status === 401 && !path.startsWith('/auth/') && typeof window !== 'undefined') window.dispatchEvent(new Event('tracedesk:session-expired'))
+    if (response.status === 401 && requestSession === csrf && !path.startsWith('/auth/') && typeof window !== 'undefined') window.dispatchEvent(new Event('tracedesk:session-expired'))
     throw new ApiError(userMessage(data.error || 'The request could not be completed.'), response.status)
   }
   return data as T

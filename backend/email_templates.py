@@ -65,7 +65,7 @@ def authentication(kind, text):
 def incident(episode, attempt, report=None, *, alert=False, coverage=""):
     link = config.PUBLIC_URL + "/incidents/" + episode["id"]
     base = [("Project", concise(episode["project_name"], 120)), ("Observed problem", concise(episode["title"], 240)),
-            ("Event time (UTC)", episode["triggered_at"])]
+            ("Notification received (UTC)" if episode.get('event_time_known') is False else "Event time (UTC)", episode["triggered_at"])]
     if alert:
         return shell(SUBJECTS["incident_alert"], base + [("Status", episode["state"].capitalize() + ". " + (episode.get("error") or "Evidence collection begins after a 60-second telemetry delay. No cause has been assessed yet."))], "Open incident", link, incident=True)
     if report:

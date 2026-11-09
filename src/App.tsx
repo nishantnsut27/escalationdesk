@@ -42,10 +42,14 @@ export default function App() {
     if (explicit) navigateHref(destination || '/dashboard', true)
   }, [])
   const refreshSession = useCallback(async () => {
-    const value = await api<Session>('/auth/me')
-    const destination = pendingDestination()
-    acceptSession(value, false)
-    if (value.user.email_verified && user && !user.email_verified && !user.read_only) navigateHref(destination || '/dashboard', true)
+    const revision = epoch.current
+    try {
+      const value = await api<Session>('/auth/me')
+      if (revision !== epoch.current) return
+      const destination = pendingDestination()
+      acceptSession(value, false)
+      if (value.user.email_verified && user && !user.email_verified && !user.read_only) navigateHref(destination || '/dashboard', true)
+    } catch (error) { if (revision === epoch.current) throw error }
   }, [acceptSession, user])
   const expireSession = useCallback(() => {
     const destination = emailDestination(currentRouteHref())
@@ -163,10 +167,12 @@ export default function App() {
       }
     }}>
       <div className="sidebar-brand"><Brand /><button className="icon-button mobile-only" aria-label="Close navigation" onClick={() => setMobileNav(false)}><X size={18} /></button></div>
+      <div className="sidebar-scroll">
       <div className="workspace-label"><span className="workspace-avatar">{user.read_only ? 'D' : user.name.charAt(0).toUpperCase()}</span><div><strong>{user.read_only ? 'Demo workspace' : 'Personal workspace'}</strong><span>{user.read_only ? 'Recorded · Read-only' : 'Your saved evidence'}</span></div></div>
       <span className="nav-label">EXPLORER</span><nav aria-label="Workspace">{nav.map(({ page, label, icon: Icon }) => <Fragment key={page}>{page === 'connections' && <span className="nav-label nav-section-label">SOURCES</span>}<a href={'/' + page} aria-current={route.page === page || (page === 'collections' && route.page === 'logs') ? 'page' : undefined}><Icon size={18} />{label}</a></Fragment>)}</nav>
       {user.read_only && <a className={'demo-nav' + (route.page === 'demo' ? ' active' : '')} href="/demo"><Layers3 size={17} />Recorded demo gallery</a>}
-      <div className="sidebar-bottom"><div className="snapshot-note"><ShieldCheck size={16} /><p>{user.read_only ? 'Reviewed recordings. Browsing does not start analysis.' : 'Saved snapshots. Investigate when you are ready.'}</p></div><div className="user-row"><span className="avatar">{user.name.charAt(0).toUpperCase()}</span><div><strong>{user.name}</strong><span>{user.read_only ? 'Recorded demo account' : user.email}</span></div><button className="icon-button" aria-label="Sign out" onClick={() => void logout()}><LogOut size={16} /></button></div></div>
+      <div className="snapshot-note"><ShieldCheck size={16} /><p>{user.read_only ? 'Reviewed recordings. Browsing does not start analysis.' : 'Saved snapshots. Investigate when you are ready.'}</p></div></div>
+      <div className="sidebar-bottom"><div className="user-row"><span className="avatar">{user.name.charAt(0).toUpperCase()}</span><div><strong>{user.name}</strong><span>{user.read_only ? 'Recorded demo account' : user.email}</span></div><button className="icon-button" aria-label="Sign out" onClick={() => void logout()}><LogOut size={16} /></button></div></div>
     </aside><div className="main-shell" inert={mobileNav}><header className="topbar"><div><button className="icon-button mobile-only" aria-label="Open navigation" aria-expanded={mobileNav} aria-controls="workspace-navigation" onClick={() => setMobileNav(!mobileNav)}><Menu size={20} /></button><span>Workspace</span><ChevronRight size={13} /><strong>{title}</strong></div><span className="connection-pill"><i />{user.read_only ? 'Recorded demonstration' : 'Saved evidence'}</span></header>
       <main ref={main} id="main-content" tabIndex={-1} key={user.id}>{error && <ErrorState error={error} />}<Suspense fallback={<LoadingState layout={route.page === 'dashboard' ? 'dashboard' : route.page === 'errors' ? 'errors' : route.page === 'collections' ? route.id ? 'collection' : 'cards' : route.page === 'demo' ? 'demo' : route.page === 'investigations' && !route.id ? 'investigations' : 'detail'} />}>{content}</Suspense><footer className="page-footer"><span>saved evidence / cited assessments</span><a href="/privacy">Data use</a></footer></main>
     </div></div></WritePermission.Provider>

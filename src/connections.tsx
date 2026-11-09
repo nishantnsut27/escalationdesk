@@ -84,6 +84,7 @@ export function ConnectionsWorkspace() {
   const [region, setRegion] = useState('us')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [loadError, setLoadError] = useState('')
   const mounted = useRef(false)
   const refreshInFlight = useRef<Promise<void> | null>(null)
@@ -113,11 +114,17 @@ export function ConnectionsWorkspace() {
     try { await refresh() } catch (e) { if (mounted.current) setLoadError(e instanceof Error ? e.message : 'Sentry connections could not be loaded. Try again.') }
   }
   async function action(path: string, body: unknown = {}) {
-    setBusy(true); setError('')
-    try { await api(path, body); await refresh() } catch (e) { fail(e) } finally { if (mounted.current) setBusy(false) }
+    setBusy(true); setError(''); setNotice('')
+    try {
+      await api(path, body)
+      // A poll started before this write can still contain the old connection.
+      await refreshInFlight.current?.catch(() => {})
+      await refresh()
+      if (mounted.current && path.endsWith('/disconnect')) setNotice('Sentry disconnected. Saved evidence and reports remain available. You can also uninstall TraceDesk in Sentry’s integration settings.')
+    } catch (e) { fail(e) } finally { if (mounted.current) setBusy(false) }
   }
   async function connect() {
-    setBusy(true); setError('')
+    setBusy(true); setError(''); setNotice('')
     try {
       const value = await api<{ url: string }>('/connections/sentry/start', { region })
       if (mounted.current) window.location.assign(value.url)
@@ -127,6 +134,7 @@ export function ConnectionsWorkspace() {
   const activeImport = data?.imports.some(item => active.includes(item.state))
   return <div className="connections-workspace"><PageHeading eyebrow="CONNECTIONS" title="Connections" actions={<div className="connection-header-actions"><label>Region for new authorization<select value={region} onChange={e => setRegion(e.target.value)} disabled={busy || !data}><option value="us">United States</option><option value="eu">European Union</option></select></label><Button onClick={() => void connect()} disabled={!canWrite || busy || !data?.configured} aria-busy={busy || undefined}>{busy ? <LoaderCircle size={16} className="spin" /> : <Cable size={16} />}Connect Sentry</Button></div>}>Connect Sentry, select a time window and save the observations you need.</PageHeading>
     {error && <ErrorState error={error} />}
+    {notice && <p role="status">{notice}</p>}
     {loadError && <ErrorState error={loadError} retry={() => void retryConnections()} />}
     {!data && !loadError && <LoadingState>Loading Sentry connections…</LoadingState>}
     {data && <>

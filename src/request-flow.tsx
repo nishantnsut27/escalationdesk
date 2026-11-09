@@ -28,7 +28,7 @@ export function layoutFlow(data: FlowData, onSelect: (id: string) => void = () =
   const positions = treePositions(data.nodes.map(node => node.id), data.edges)
   return data.nodes.map(observation => {
     const point = positions.get(observation.id)!
-    return { id: observation.id, type: 'service', position: { x: point.y / 238 * 328, y: point.x / 300 * 226 },
+    return { id: observation.id, type: 'service', initialWidth: 248, initialHeight: 178, position: { x: point.y / 238 * 328, y: point.x / 300 * 226 },
       selected: selected === observation.id, data: { observation, onSelect }, style: { width: 248, height: 178 } }
   })
 }

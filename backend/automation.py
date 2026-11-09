@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,7 @@ from .imports import redact_object
 
 ACTIVE = ('queued', 'importing', 'investigating', 'waiting', 'deferred')
 TERMINAL = ('completed', 'inconclusive', 'failed', 'interrupted')
+RETRYABLE = ('inconclusive', 'failed', 'interrupted')
 WINDOW = 86400
 QUEUE_LIMIT = 20
 logger = logging.getLogger(__name__)
@@ -102,11 +104,19 @@ def accept(raw, value, headers):
         raise HTTPException(400, "Invalid Sentry issue notification.")
     issue = data['issue']
     action = value.get('action')
+    if not isinstance(action, str):
+        raise HTTPException(400, "Invalid Sentry issue action.")
     if action not in {'created', 'unresolved', 'resolved', 'archived'}:
         return {'ok': True, 'ignored': True}
     try:
         identifier, project_id = str(issue['id']), str(issue['project']['id'])
         if not re.fullmatch(r'[0-9]{1,32}', identifier) or not re.fullmatch(r'[0-9]{1,32}', project_id):
+            raise ValueError()
+        for field in ('title', 'issueCategory', 'firstSeen', 'lastSeen', 'status', 'trace_id'):
+            if issue.get(field) is not None and not isinstance(issue[field], str):
+                raise ValueError()
+        contexts = issue.get('contexts')
+        if contexts is not None and (not isinstance(contexts, dict) or contexts.get('trace') is not None and not isinstance(contexts['trace'], dict)):
             raise ValueError()
         cleaned = redact_object(source_scrub(value))[0]
     except (KeyError, TypeError, ValueError, RecursionError):
@@ -128,6 +138,21 @@ def accept(raw, value, headers):
         row = conn.execute("INSERT INTO automatic_deliveries(id,body_digest,request_id,connection_id,user_id,issue_id,project_id,action,received_at,payload,next_attempt) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(body_digest) DO NOTHING RETURNING id",
             (db.uid(), digest, request_id, connection['id'], connection['user_id'], identifier, project_id, action, stamp, json.dumps(cleaned), stamp)).fetchone()
     return {'ok': True, 'duplicate': not bool(row)}
+
+
+def queue_notification(conn, episode, attempt, *, alert=False):
+    """Persist intent without letting encryption or rendering abort an incident."""
+    key = 'incident:' + episode['id'] + (':alert' if alert else ':result:' + attempt['id'])
+    if conn.execute("SELECT 1 FROM email_jobs WHERE dedupe_key=%s", (key,)).fetchone():
+        return
+    option = settings(conn, {'id': episode['connection_id'], 'user_id': episode['user_id']})
+    if not option['initial_email' if alert else 'result_email']:
+        notify(conn, episode, attempt, alert=alert)
+        return
+    snapshot = {k: episode.get(k) for k in ('id', 'user_id', 'connection_id', 'project_name', 'title', 'triggered_at', 'event_time_known', 'lifecycle', 'state', 'error')}
+    stamp = time.time()
+    conn.execute("INSERT INTO automatic_notifications(dedupe_key,incident_id,attempt_id,kind,episode,created_at,expires,next_attempt) VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+        (key, episode['id'], attempt['id'], 'incident_alert' if alert else 'incident_result', json.dumps(snapshot), stamp, stamp+23*3600, stamp))
 
 
 def queue_reason(conn, owner, stamp, *, admission=True):
@@ -154,7 +179,7 @@ def notification_allowed(job):
         return bool(row and row[preference] and conn.execute("SELECT 1 FROM account_security WHERE user_id=%s AND verified_at IS NOT NULL", (job['user_id'],)).fetchone())
 
 
-def notify(conn, episode, attempt, *, alert=False):
+def notify(conn, episode, attempt, *, alert=False, expires=None):
     kind = 'incident_alert' if alert else 'incident_result'
     key = 'incident:' + episode['id'] + (':alert' if alert else ':result:' + attempt['id'])
     if conn.execute("SELECT 1 FROM email_jobs WHERE dedupe_key=%s", (key,)).fetchone():
@@ -177,13 +202,14 @@ def notify(conn, episode, attempt, *, alert=False):
             coverage = summary.get('coverage', '') + ' ' + ' '.join(k + ': ' + v['state'] for k, v in summary.get('datasets', {}).items())
     rendered = email_templates.incident(episode, attempt, report, alert=alert, coverage=coverage)
     owner = conn.execute("SELECT * FROM users WHERE id=%s", (episode['user_id'],)).fetchone()
-    email_service.enqueue(conn, owner, kind, rendered['text'], key, time.time() + 23*3600,
+    email_service.enqueue(conn, owner, kind, rendered['text'], key, expires or time.time() + 23*3600,
         rendered=rendered, incident_id=episode['id'], attempt_id=attempt['id'])
 
 
 def finish(conn, episode, attempt, state, error=None):
     conn.execute("UPDATE automatic_attempts SET state=%s,error=%s,completed_at=%s WHERE id=%s", (state, error, db.now(), attempt['id']))
     conn.execute("UPDATE automatic_incidents SET state=%s,error=%s,completed_at=%s WHERE id=%s", (state, error, db.now(), episode['id']))
+    queue_notification(conn, {**episode, 'state': state, 'error': error}, {**attempt, 'state': state, 'error': error})
 
 
 def start_attempt(investigation_id):
@@ -220,7 +246,16 @@ def public_incident(conn, row, detail=False):
     result['attempts'] = [{k: v.isoformat() if isinstance(v, datetime) or k == 'allowance_day' and v else v for k, v in a.items() if k != 'user_id'} for a in attempts]
     if attempts:
         result['resume_until'] = attempts[-1]['resume_until']
+    latest = attempts[-1] if attempts else None
+    connection = conn.execute("SELECT * FROM sentry_connections WHERE id=%s", (row['connection_id'],)).fetchone()
+    result['retry_allowed'] = bool(latest and latest['state'] in RETRYABLE and eligible(conn, connection, row['project_id']))
+    result['retry_reason'] = (None if result['retry_allowed'] else 'This incident already has active work.' if latest and latest['state'] in ACTIVE
+        else 'Use Analyze further on the saved supported report.' if latest and latest['state'] == 'completed'
+        else 'Reconnect Sentry and enable this project before retrying.')
+    for attempt in result['attempts']:
+        attempt['imports'] = [dict(item) for item in conn.execute("SELECT s.id,s.collection_id,s.state,s.created_at FROM automatic_attempt_imports h JOIN sentry_imports s ON s.id=h.import_id WHERE h.attempt_id=%s AND s.user_id=%s ORDER BY s.created_at,s.id", (attempt['id'], row['user_id']))]
     result['notifications'] = [dict(a) for a in conn.execute("SELECT id,kind,state,attempts,delivery_status,delivery_at,last_error,automatic_attempt_id,template_version FROM email_jobs WHERE incident_id=%s AND user_id=%s ORDER BY created_at,id", (row['id'], row['user_id']))]
+    result['notifications'] += [dict(a) for a in conn.execute("SELECT n.dedupe_key AS id,n.kind,n.state,n.attempts,NULL AS delivery_status,n.last_error,n.attempt_id AS automatic_attempt_id FROM automatic_notifications n WHERE n.incident_id=%s AND NOT EXISTS (SELECT 1 FROM email_jobs e WHERE e.dedupe_key=n.dedupe_key) ORDER BY n.created_at,n.dedupe_key", (row['id'],))]
     result['report_id'] = next((a['investigation_id'] for a in reversed(attempts) if a['state'] in {'completed', 'inconclusive'}), None)
     if detail:
         result['observation'] = json.loads(row['observation'])
@@ -272,6 +307,8 @@ async def retry(request):
                 if old['explicit_retry']:
                     return public_incident(conn, episode, True)
                 raise HTTPException(409, "This incident already has active work.")
+            if old['state'] not in RETRYABLE:
+                raise HTTPException(409, "Use Analyze further on the saved supported report.")
             connection = conn.execute("SELECT * FROM sentry_connections WHERE id=%s", (episode['connection_id'],)).fetchone()
             if not eligible(conn, connection, episode['project_id']):
                 raise HTTPException(409, "Reconnect Sentry and enable this project before retrying.")
@@ -314,20 +351,19 @@ class AutomationWorker:
                         self.investigator.enqueue(row['id'])
                 self.enqueued.intersection_update({r['investigation_id'] for r in await asyncio.to_thread(db.all_rows, "SELECT investigation_id FROM automatic_attempts WHERE state IN ('queued','deferred','investigating','waiting') AND investigation_id IS NOT NULL")})
                 self.importer.wake()
-            except Exception:
-                logger.warning("Automatic investigation handoff unavailable; retained work will be checked again.")
+            except Exception as exc:
+                logger.warning("Automation stage=handoff error_type=%s; retained work will be checked again.", type(exc).__name__)
             await asyncio.sleep(1)
 
     async def process_deliveries(self):
         # Bounded reconciliation; outages retain accepted deliveries for retry.
         rows = await asyncio.to_thread(db.all_rows, "SELECT * FROM automatic_deliveries WHERE state='pending' AND next_attempt<=%s ORDER BY received_at,id LIMIT 10", (time.time(),))
         for delivery in rows:
-            if delivery['action'] == 'created':
-                # Queue the immediate observed alert before external evidence or
-                # reconciliation I/O; the webhook only persists the delivery.
-                await asyncio.to_thread(self.prepare_created, delivery)
-            connection = await asyncio.to_thread(db.one, "SELECT * FROM sentry_connections WHERE id=%s", (delivery['connection_id'],))
             try:
+                if delivery['action'] == 'created':
+                    await asyncio.to_thread(self.prepare_created, delivery)
+                    await asyncio.to_thread(self.process_notifications)
+                connection = await asyncio.to_thread(db.one, "SELECT * FROM sentry_connections WHERE id=%s", (delivery['connection_id'],))
                 if connection['state'] != 'connected':
                     await asyncio.to_thread(db.execute, "UPDATE automatic_deliveries SET state='ignored',error='Connection disconnected before reconciliation.' WHERE id=%s", (delivery['id'],))
                     continue
@@ -340,13 +376,23 @@ class AutomationWorker:
                         raise SentryError("Issue transition history could not be reconciled.")
                     issue['activity'] = activities
                 await asyncio.to_thread(self.reconcile, delivery, issue)
-            except SentryError:
+            except SentryError as exc:
                 stamp = time.time()
                 if stamp >= delivery['received_at'] + WINDOW:
                     # Persist the incident before marking the expired handoff.
                     await asyncio.to_thread(self.expire_delivery, delivery)
                 else:
-                    await asyncio.to_thread(db.execute, "UPDATE automatic_deliveries SET attempts=attempts+1,next_attempt=%s,error='Current Sentry issue could not be reconciled; retrying within 24 hours.' WHERE id=%s AND state='pending'", (stamp+min(300, 5*2**min(delivery['attempts'],6)), delivery['id']))
+                    delay = min(300, 5*2**min(delivery['attempts'],6))
+                    if exc.status == 429 and isinstance(exc.retry_after, (int, float)) and math.isfinite(exc.retry_after):
+                        delay = max(delay, exc.retry_after)
+                    await asyncio.to_thread(db.execute, "UPDATE automatic_deliveries SET attempts=attempts+1,next_attempt=%s,error=%s WHERE id=%s AND state='pending'", (min(stamp+delay, delivery['received_at']+WINDOW), 'Sentry reconciliation unavailable (HTTP ' + str(exc.status or 'unknown') + '); retrying within 24 hours.', delivery['id']))
+                logger.warning("Automation stage=reconcile delivery=%s http_status=%s", delivery['id'], exc.status)
+            except db.Error:
+                logger.warning("Automation stage=reconcile delivery=%s error_type=storage", delivery['id'])
+            except Exception as exc:
+                logger.warning("Automation stage=reconcile delivery=%s error_type=%s", delivery['id'], type(exc).__name__)
+                await asyncio.to_thread(db.execute, "UPDATE automatic_deliveries SET state='failed',error='Invalid saved notification; this delivery cannot be reconciled.' WHERE id=%s AND state='pending'", (delivery['id'],))
+        await asyncio.to_thread(self.process_notifications)
 
     def prepare_created(self, delivery):
         issue = json.loads(delivery['payload'])['data']['issue']
@@ -379,10 +425,14 @@ class AutomationWorker:
             cursor = conn.execute("SELECT * FROM automatic_issues WHERE connection_id=%s AND issue_id=%s", (connection['id'], delivery['issue_id'])).fetchone()
             previous = dict(cursor) if cursor else None
             activity = issue.get('activity') or []
+            if not isinstance(activity, list):
+                raise SentryError("Invalid Sentry issue transition history.")
             changes = [a for a in activity if isinstance(a, dict) and a.get('type') in {'set_unresolved', 'set_regression', 'set_resolved', 'set_ignored'} and timestamp(a.get('dateCreated'))]
             latest = max(changes, key=lambda a: timestamp(a['dateCreated'])) if changes else None
             transition = str(latest.get('id')) if latest and latest.get('id') else None
             transition_at = timestamp(latest['dateCreated']) if latest else None
+            if previous and previous['transition_at'] and transition_at and transition_at < previous['transition_at']:
+                raise SentryError("Sentry transition history is older than the saved cursor.")
             prior_episode = conn.execute("SELECT triggered_at FROM automatic_incidents WHERE connection_id=%s AND issue_id=%s ORDER BY episode DESC LIMIT 1", (connection['id'], delivery['issue_id'])).fetchone() if previous else None
             cutoff = previous['transition_at'] or (prior_episode['triggered_at'] if prior_episode else None) if previous else None
             intervening_close = any(a['type'] in {'set_resolved', 'set_ignored'} and (not cutoff or timestamp(a['dateCreated']) > cutoff) and transition_at and timestamp(a['dateCreated']) < transition_at for a in changes)
@@ -408,11 +458,14 @@ class AutomationWorker:
     @staticmethod
     def create_episode(conn, delivery, issue, connection, number, trigger):
         stamp = delivery['received_at']
-        event_time = timestamp(issue.get('firstSeen') if trigger == 'created' else issue.get('lastSeen')) or datetime.fromtimestamp(stamp, timezone.utc).isoformat()
-        observation = {'message': redact(str(issue.get('title') or 'Sentry error issue'))[0][:2000], 'timestamp': event_time,
+        observed_time = timestamp(issue.get('firstSeen') if trigger == 'created' else issue.get('lastSeen'))
+        event_time = observed_time or datetime.fromtimestamp(stamp, timezone.utc).isoformat()
+        observation = {'message': redact(str(issue.get('title') or 'Sentry error issue'))[0][:2000], 'timestamp': observed_time,
             'source_issue_id': delivery['issue_id'], 'source_project_id': delivery['project_id'], 'source_project': issue['project'].get('slug'),
             'source_format': 'sentry', 'source_dataset': 'issue', 'source_note': 'Triggering issue notification; this is an observed symptom, not a full error event.', 'level': 'error'}
-        context = (issue.get('contexts') or {}).get('trace') or {}
+        contexts = issue.get('contexts')
+        context = contexts.get('trace') if isinstance(contexts, dict) else None
+        context = context if isinstance(context, dict) else {}
         trace = issue.get('trace_id') or context.get('trace_id')
         if isinstance(trace, str) and re.fullmatch(r'[a-fA-F0-9]{32}', trace):
             observation['trace_id'] = trace
@@ -424,9 +477,10 @@ class AutomationWorker:
         conn.execute("INSERT INTO automatic_incidents(id,user_id,connection_id,issue_id,project_id,project_name,title,episode,trigger,triggered_at,received_at,resume_until,collect_after,lifecycle,state,observation,trace_id,error) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'open',%s,%s,%s,%s)",
             (identifier, connection['user_id'], connection['id'], delivery['issue_id'], delivery['project_id'], redact(str(issue['project'].get('name') or issue['project'].get('slug') or delivery['project_id']))[0][:120], observation['message'][:120], number, trigger, event_time, stamp, stamp+WINDOW, stamp+60, state, json.dumps(observation), trace, reason))
         conn.execute("INSERT INTO automatic_attempts(id,incident_id,user_id,number,state,created_at,resume_until) VALUES(%s,%s,%s,1,%s,%s,%s)", (attempt_id, identifier, connection['user_id'], state, db.now(), stamp+WINDOW))
+        conn.execute("UPDATE automatic_incidents SET event_time_known=%s WHERE id=%s", (observed_time is not None, identifier))
         episode = dict(conn.execute("SELECT * FROM automatic_incidents WHERE id=%s", (identifier,)).fetchone())
         attempt = dict(conn.execute("SELECT * FROM automatic_attempts WHERE id=%s", (attempt_id,)).fetchone())
-        notify(conn, episode, attempt, alert=True)
+        queue_notification(conn, episode, attempt, alert=True)
         return identifier
 
     def expire_delivery(self, delivery):
@@ -443,112 +497,180 @@ class AutomationWorker:
                 conn.execute("INSERT INTO automatic_issues(connection_id,issue_id,user_id,project_id,lifecycle,episode) VALUES(%s,%s,%s,%s,'open',1) ON CONFLICT DO NOTHING", (connection['id'], delivery['issue_id'], connection['user_id'], delivery['project_id']))
             conn.execute("UPDATE automatic_deliveries SET state='expired',incident_id=%s,error='Reconciliation was unavailable for 24 hours; explicit retry required.' WHERE id=%s", (identifier, delivery['id']))
 
+    def process_notifications(self):
+        rows = db.all_rows("SELECT dedupe_key FROM automatic_notifications WHERE state='pending' AND next_attempt<=%s ORDER BY next_attempt,dedupe_key LIMIT 20", (time.time(),))
+        for row in rows:
+            try:
+                with db.connection() as conn:
+                    intent = conn.execute("SELECT * FROM automatic_notifications WHERE dedupe_key=%s FOR UPDATE", (row['dedupe_key'],)).fetchone()
+                    if intent['state'] != 'pending':
+                        continue
+                    if time.time() >= intent['expires']:
+                        conn.execute("UPDATE automatic_notifications SET state='expired',last_error='Notification preparation expired.' WHERE dedupe_key=%s", (row['dedupe_key'],))
+                        continue
+                    attempt = dict(conn.execute("SELECT * FROM automatic_attempts WHERE id=%s", (intent['attempt_id'],)).fetchone())
+                    notify(conn, json.loads(intent['episode']), attempt, alert=intent['kind'] == 'incident_alert', expires=intent['expires'])
+                    conn.execute("UPDATE automatic_notifications SET state='queued',last_error=NULL WHERE dedupe_key=%s", (row['dedupe_key'],))
+            except Exception as exc:
+                logger.warning("Automation stage=notification intent=%s error_type=%s", row['dedupe_key'], type(exc).__name__)
+                try:
+                    db.execute("UPDATE automatic_notifications SET attempts=attempts+1,next_attempt=%s,last_error='Notification preparation failed; retained result is unchanged.' WHERE dedupe_key=%s AND state='pending'", (time.time()+60, row['dedupe_key']))
+                except db.Error:
+                    pass
+
     def advance(self):
+        # Each item commits independently; the cursor rotates past blocked work.
+        pending = db.all_rows("SELECT a.id,a.started_at,a.investigation_id,a.resume_until,i.collect_after FROM automatic_attempts a JOIN automatic_incidents i ON i.id=a.incident_id WHERE a.state IN ('queued','importing','investigating','waiting','deferred') ORDER BY a.checked_at,a.created_at,a.id LIMIT 100")
+        waiting = []
+        for item in pending:
+            if not item['started_at'] and not item['investigation_id'] and time.time() < min(item['collect_after'], item['resume_until']):
+                waiting.append(item['id'])
+                continue
+            try:
+                self.advance_one(item['id'])
+            except db.Error:
+                logger.warning("Automation stage=advance attempt=%s error_type=storage", item['id'])
+            except Exception as exc:
+                logger.warning("Automation stage=advance attempt=%s error_type=%s", item['id'], type(exc).__name__)
+                with db.connection() as conn:
+                    db.lock(conn)
+                    attempt = dict(conn.execute("SELECT * FROM automatic_attempts WHERE id=%s", (item['id'],)).fetchone())
+                    episode = dict(conn.execute("SELECT * FROM automatic_incidents WHERE id=%s", (attempt['incident_id'],)).fetchone())
+                    conn.execute("UPDATE automatic_attempts SET checked_at=%s WHERE id=%s", (time.time(), item['id']))
+                    if attempt['state'] in ACTIVE and not attempt['started_at']:
+                        message = 'Automatic handoff failed. Retained evidence is available; retry explicitly.'
+                        finish(conn, episode, attempt, 'failed', message)
+                        if attempt['investigation_id']:
+                            conn.execute("UPDATE investigations SET state='interrupted',completed_at=%s,error=%s WHERE id=%s AND state='queued'", (db.now(), message, attempt['investigation_id']))
+                        if attempt['import_id']:
+                            conn.execute("UPDATE sentry_imports SET state='cancelled',completed_at=%s,error=%s WHERE id=%s AND state='queued'", (db.now(), message, attempt['import_id']))
+        if waiting:
+            db.execute("UPDATE automatic_attempts SET checked_at=%s WHERE id=ANY(%s)", (time.time(), waiting))
+        # Recover terminal outcomes saved immediately before a restart.
+        ended = db.all_rows("SELECT a.id FROM automatic_attempts a WHERE a.state IN ('completed','inconclusive','failed','interrupted') AND NOT EXISTS (SELECT 1 FROM email_jobs e WHERE e.dedupe_key='incident:' || a.incident_id || ':result:' || a.id) AND NOT EXISTS (SELECT 1 FROM automatic_notifications n WHERE n.attempt_id=a.id AND n.kind='incident_result') ORDER BY a.created_at,a.id LIMIT 20")
+        for item in ended:
+            try:
+                with db.connection() as conn:
+                    db.lock(conn)
+                    attempt = dict(conn.execute("SELECT * FROM automatic_attempts WHERE id=%s", (item['id'],)).fetchone())
+                    episode = dict(conn.execute("SELECT * FROM automatic_incidents WHERE id=%s", (attempt['incident_id'],)).fetchone())
+                    queue_notification(conn, episode, attempt)
+            except Exception as exc:
+                logger.warning("Automation stage=result-intent attempt=%s error_type=%s", item['id'], type(exc).__name__)
+        self.process_notifications()
+
+    def advance_one(self, identifier):
         with db.connection() as conn:
             db.lock(conn)
-            # Notifications are a separate durable handoff after saving outcomes.
-            ended = conn.execute("SELECT i.* FROM automatic_incidents i JOIN automatic_attempts a ON a.incident_id=i.id WHERE a.state IN ('completed','inconclusive','failed','interrupted') AND NOT EXISTS (SELECT 1 FROM email_jobs e WHERE e.dedupe_key='incident:' || i.id || ':result:' || a.id) ORDER BY i.received_at LIMIT 20").fetchall()
-            for episode in ended:
-                for attempt in conn.execute("SELECT * FROM automatic_attempts WHERE incident_id=%s AND state IN ('completed','inconclusive','failed','interrupted')", (episode['id'],)).fetchall():
-                    notify(conn, dict(episode), dict(attempt))
-            pending = conn.execute("SELECT * FROM automatic_attempts WHERE state IN ('queued','importing','investigating','waiting','deferred') ORDER BY created_at,id LIMIT 100").fetchall()
-            for item in pending:
-                attempt = dict(item)
-                episode = dict(conn.execute("SELECT * FROM automatic_incidents WHERE id=%s", (attempt['incident_id'],)).fetchone())
+            item = conn.execute("SELECT * FROM automatic_attempts WHERE id=%s", (identifier,)).fetchone()
+            if not item or item['state'] not in ACTIVE:
+                return
+            attempt = dict(item)
+            conn.execute("UPDATE automatic_attempts SET checked_at=%s WHERE id=%s", (time.time(), identifier))
+            episode = dict(conn.execute("SELECT * FROM automatic_incidents WHERE id=%s", (attempt['incident_id'],)).fetchone())
+            if attempt['investigation_id']:
+                saved = conn.execute("SELECT * FROM investigations WHERE id=%s", (attempt['investigation_id'],)).fetchone()
+                if saved['state'] in {'completed', 'failed', 'interrupted'}:
+                    state = ('inconclusive' if json.loads(saved['report'])['assessment'] == 'inconclusive' else 'completed') if saved['state'] == 'completed' else saved['state']
+                    finish(conn, episode, attempt, state, saved['error'])
+                    return
+                if attempt['started_at']:
+                    state = 'waiting' if saved['state'] == 'quota_waiting' else 'investigating'
+                    conn.execute("UPDATE automatic_attempts SET state=%s WHERE id=%s", (state, attempt['id']))
+                    conn.execute("UPDATE automatic_incidents SET state=%s WHERE id=%s", (state, episode['id']))
+                    return
+            connection = conn.execute("SELECT * FROM sentry_connections WHERE id=%s", (episode['connection_id'],)).fetchone()
+            stamp = time.time()
+            if stamp >= attempt['resume_until'] or not eligible(conn, connection, episode['project_id']):
+                message = 'The 24-hour automatic resumption window expired. Retry explicitly.' if stamp >= attempt['resume_until'] else 'Automation is disabled or the connection/project is unavailable. Retry explicitly after enabling it.'
+                finish(conn, episode, attempt, 'interrupted', message)
                 if attempt['investigation_id']:
-                    saved = conn.execute("SELECT * FROM investigations WHERE id=%s", (attempt['investigation_id'],)).fetchone()
-                    if saved['state'] in {'completed', 'failed', 'interrupted'}:
-                        state = ('inconclusive' if json.loads(saved['report'])['assessment'] == 'inconclusive' else 'completed') if saved['state'] == 'completed' else saved['state']
-                        finish(conn, episode, attempt, state, saved['error'])
-                        continue
-                    if attempt['started_at']:
-                        state = 'waiting' if saved['state'] == 'quota_waiting' else 'investigating'
-                        conn.execute("UPDATE automatic_attempts SET state=%s WHERE id=%s", (state, attempt['id']))
-                        conn.execute("UPDATE automatic_incidents SET state=%s WHERE id=%s", (state, episode['id']))
-                        continue
-                connection = conn.execute("SELECT * FROM sentry_connections WHERE id=%s", (episode['connection_id'],)).fetchone()
-                stamp = time.time()
-                if stamp >= attempt['resume_until'] or not eligible(conn, connection, episode['project_id']):
-                    message = 'The 24-hour automatic resumption window expired. Retry explicitly.' if stamp >= attempt['resume_until'] else 'Automation is disabled or the connection/project is unavailable. Retry explicitly after enabling it.'
-                    finish(conn, episode, attempt, 'interrupted', message)
-                    if attempt['investigation_id']:
-                        conn.execute("UPDATE investigations SET state='interrupted',error=%s,completed_at=%s WHERE id=%s AND state='queued'", (message, db.now(), attempt['investigation_id']))
-                    if attempt['import_id']:
-                        conn.execute("UPDATE sentry_imports SET state='cancelled',error=%s,completed_at=%s WHERE id=%s AND state='queued'", (message, db.now(), attempt['import_id']))
-                    continue
-                if stamp < episode['collect_after']:
-                    continue
-                unresolved = conn.execute("SELECT 1 FROM automatic_deliveries WHERE incident_id=%s AND state='pending'", (episode['id'],)).fetchone()
-                if unresolved:
-                    self.defer(conn, episode, attempt, 'Waiting to reconcile the current Sentry issue before starting work.')
-                    continue
+                    conn.execute("UPDATE investigations SET state='interrupted',error=%s,completed_at=%s WHERE id=%s AND state='queued'", (message, db.now(), attempt['investigation_id']))
                 if attempt['import_id']:
-                    job = conn.execute("SELECT * FROM sentry_imports WHERE id=%s", (attempt['import_id'],)).fetchone()
-                    if job['state'] in {'queued', 'running', 'rate_limited'}:
-                        state = 'waiting' if job['state'] == 'rate_limited' else 'importing'
-                        conn.execute("UPDATE automatic_incidents SET state=%s WHERE id=%s", (state, episode['id']))
-                        continue
-                    if job['state'] == 'interrupted':
-                        # Evidence collection has no model spending. Resume by
-                        # retaining a new snapshot; never overwrite the old one.
-                        conn.execute("UPDATE automatic_attempts SET import_id=NULL,state='queued' WHERE id=%s", (attempt['id'],))
-                        attempt['import_id'] = None
-                    elif job['state'] in {'failed', 'cancelled'}:
-                        finish(conn, episode, attempt, 'failed', job['error'] or 'Sentry evidence collection failed. Retained observations remain available.')
-                        continue
-                    elif not attempt['investigation_id']:
-                        if conn.execute("SELECT 1 FROM investigations WHERE collection_id=%s AND state IN ('queued','running','quota_waiting')", (job['collection_id'],)).fetchone():
-                            self.defer(conn, episode, attempt, 'An investigation already uses this snapshot. Waiting for it to finish.')
-                            continue
-                        reason = queue_reason(conn, episode['user_id'], stamp, admission=False)
-                        if reason:
-                            self.defer(conn, episode, attempt, reason)
-                            continue
-                        identifier = db.uid()
-                        conn.execute("INSERT INTO investigations(id,user_id,collection_id,engine,state,created_at,usage) VALUES(%s,%s,%s,'groq','queued',%s,%s)", (identifier, episode['user_id'], job['collection_id'], db.now(), json.dumps({'triage': {'requested': True, 'state': 'pending'}, 'automatic_incident_id': episode['id'], 'trigger_observation_id': 'auto-trigger-' + job['id']})))
-                        conn.execute("UPDATE automatic_attempts SET investigation_id=%s,state='queued',error=NULL WHERE id=%s", (identifier, attempt['id']))
-                        conn.execute("UPDATE automatic_incidents SET state='queued',error=NULL WHERE id=%s", (episode['id'],))
-                        continue
-                if attempt['investigation_id']:
-                    # Requeue unstarted investigations after UTC capacity returns.
-                    day = datetime.fromtimestamp(stamp, timezone.utc).date()
-                    used = conn.execute("SELECT attempts FROM automatic_daily_allowance WHERE user_id=%s AND day=%s", (episode['user_id'], day)).fetchone()
-                    if attempt['state'] == 'deferred' and (not used or used['attempts'] < 5):
-                        conn.execute("UPDATE automatic_attempts SET state='queued',error=NULL WHERE id=%s", (attempt['id'],))
-                        conn.execute("UPDATE automatic_incidents SET state='queued',error=NULL WHERE id=%s", (episode['id'],))
-                        self.enqueued.discard(attempt['investigation_id'])
-                    continue
-                if not attempt['import_id']:
+                    conn.execute("UPDATE sentry_imports SET state='cancelled',error=%s,completed_at=%s WHERE id=%s AND state='queued'", (message, db.now(), attempt['import_id']))
+                return
+            if stamp < episode['collect_after']:
+                return
+            unresolved = conn.execute("SELECT 1 FROM automatic_deliveries WHERE incident_id=%s AND state='pending'", (episode['id'],)).fetchone()
+            if unresolved:
+                self.defer(conn, episode, attempt, 'Waiting to reconcile the current Sentry issue before starting work.')
+                return
+            if not attempt['explicit_retry'] and conn.execute("SELECT 1 FROM automatic_deliveries WHERE incident_id=%s AND state='failed'", (episode['id'],)).fetchone():
+                finish(conn, episode, attempt, 'failed', 'The triggering notification could not be reconciled. Retry explicitly.')
+                return
+            if attempt['import_id']:
+                job = conn.execute("SELECT * FROM sentry_imports WHERE id=%s", (attempt['import_id'],)).fetchone()
+                if job['state'] in {'queued', 'running', 'rate_limited'}:
+                    state = 'waiting' if job['state'] == 'rate_limited' else 'importing'
+                    conn.execute("UPDATE automatic_incidents SET state=%s WHERE id=%s", (state, episode['id']))
+                    return
+                if job['state'] == 'interrupted':
+                    # Evidence collection has no model spending. Resume by
+                    # retaining a new snapshot; never overwrite the old one.
+                    conn.execute("INSERT INTO automatic_attempt_imports VALUES(%s,%s) ON CONFLICT DO NOTHING", (attempt['id'], job['id']))
+                    conn.execute("UPDATE automatic_attempts SET import_id=NULL,state='queued' WHERE id=%s", (attempt['id'],))
+                    attempt['import_id'] = None
+                elif job['state'] in {'failed', 'cancelled'}:
+                    finish(conn, episode, attempt, 'failed', job['error'] or 'Sentry evidence collection failed. Retained observations remain available.')
+                    return
+                elif not attempt['investigation_id']:
+                    if conn.execute("SELECT 1 FROM investigations WHERE collection_id=%s AND state IN ('queued','running','quota_waiting')", (job['collection_id'],)).fetchone():
+                        self.defer(conn, episode, attempt, 'An investigation already uses this snapshot. Waiting for it to finish.')
+                        return
                     reason = queue_reason(conn, episode['user_id'], stamp, admission=False)
                     if reason:
                         self.defer(conn, episode, attempt, reason)
-                        continue
-                    trigger_time = datetime.fromisoformat(episode['triggered_at'])
-                    # Fifteen minutes ending one minute after the event captures
-                    # immediate aftermath without requesting future telemetry.
-                    end = min(trigger_time+timedelta(seconds=60), datetime.now(timezone.utc))
-                    options = parameters({'projects': [episode['project_id']], 'datasets': ['errors', 'logs', 'spans'], 'start': (end-timedelta(minutes=15)).isoformat(), 'end': end.isoformat(), 'title': episode['title'], 'symptom': 'Sentry reported: ' + episode['title']}, connection)
-                    try:
-                        job, created = create_import(episode['user_id'], connection, options, transaction=conn, scope_key=attempt['id'])
-                        # An episode/retry always owns a distinct immutable scope.
-                        if not created:
-                            job, _ = create_import(episode['user_id'], connection, options, retry_of=job['id'], transaction=conn, scope_key=attempt['id'])
-                    except HTTPException as exc:
-                        if exc.status_code in {409, 429}:
-                            self.defer(conn, episode, attempt, 'Evidence import capacity is busy. Automatic resumption remains available for 24 hours.')
-                            continue
-                        raise
-                    observation = json.loads(episode['observation'])
-                    conn.execute("INSERT INTO evidence(id,user_id,collection_id,kind,service,timestamp,payload) VALUES(%s,%s,%s,'log','unknown',%s,%s)", ('auto-trigger-' + job['id'], episode['user_id'], job['collection_id'], episode['triggered_at'], json.dumps(observation)))
-                    summary = json.loads(conn.execute("SELECT summary FROM collections WHERE id=%s", (job['collection_id'],)).fetchone()['summary'])
-                    summary['observations'] += 1
-                    summary['input_bytes'] += len(json.dumps(observation).encode())
-                    summary['services'] = sorted(set(summary['services']) | {'unknown'})
-                    summary['kinds'] = sorted(set(summary['kinds']) | {'log'})
-                    summary['trigger_note'] = observation['source_note']
-                    conn.execute("UPDATE collections SET summary=%s WHERE id=%s", (json.dumps(summary), job['collection_id']))
-                    conn.execute("UPDATE automatic_attempts SET import_id=%s,state='importing',error=NULL WHERE id=%s", (job['id'], attempt['id']))
-                    conn.execute("UPDATE automatic_incidents SET state='importing',error=NULL WHERE id=%s", (episode['id'],))
+                        return
+                    identifier = db.uid()
+                    conn.execute("INSERT INTO investigations(id,user_id,collection_id,engine,state,created_at,usage) VALUES(%s,%s,%s,'groq','queued',%s,%s)", (identifier, episode['user_id'], job['collection_id'], db.now(), json.dumps({'triage': {'requested': True, 'state': 'pending'}, 'automatic_incident_id': episode['id'], 'trigger_observation_id': 'auto-trigger-' + job['id']})))
+                    conn.execute("UPDATE automatic_attempts SET investigation_id=%s,state='queued',error=NULL WHERE id=%s", (identifier, attempt['id']))
+                    conn.execute("UPDATE automatic_incidents SET state='queued',error=NULL WHERE id=%s", (episode['id'],))
+                    return
+            if attempt['investigation_id']:
+                # Requeue unstarted investigations after UTC capacity returns.
+                day = datetime.fromtimestamp(stamp, timezone.utc).date()
+                used = conn.execute("SELECT attempts FROM automatic_daily_allowance WHERE user_id=%s AND day=%s", (episode['user_id'], day)).fetchone()
+                if attempt['state'] == 'deferred' and (not used or used['attempts'] < 5):
+                    conn.execute("UPDATE automatic_attempts SET state='queued',error=NULL WHERE id=%s", (attempt['id'],))
+                    conn.execute("UPDATE automatic_incidents SET state='queued',error=NULL WHERE id=%s", (episode['id'],))
+                    self.enqueued.discard(attempt['investigation_id'])
+                return
+            if not attempt['import_id']:
+                reason = queue_reason(conn, episode['user_id'], stamp, admission=False)
+                if reason:
+                    self.defer(conn, episode, attempt, reason)
+                    return
+                trigger_time = datetime.fromisoformat(episode['triggered_at'])
+                # Fifteen minutes ending one minute after the event captures
+                # immediate aftermath without requesting future telemetry.
+                end = min(trigger_time+timedelta(seconds=60), datetime.now(timezone.utc))
+                options = parameters({'projects': [episode['project_id']], 'datasets': ['errors', 'logs', 'spans'], 'start': (end-timedelta(minutes=15)).isoformat(), 'end': end.isoformat(), 'title': episode['title'], 'symptom': 'Sentry reported: ' + episode['title']}, connection)
+                options['issue_id'] = episode['issue_id']
+                try:
+                    job, created = create_import(episode['user_id'], connection, options, transaction=conn, scope_key=attempt['id'])
+                    # An episode/retry always owns a distinct immutable scope.
+                    if not created:
+                        job, _ = create_import(episode['user_id'], connection, options, retry_of=job['id'], transaction=conn, scope_key=attempt['id'])
+                except HTTPException as exc:
+                    if exc.status_code in {409, 429}:
+                        self.defer(conn, episode, attempt, 'Evidence import capacity is busy. Automatic resumption remains available for 24 hours.')
+                        return
+                    raise
+                observation = json.loads(episode['observation'])
+                conn.execute("INSERT INTO evidence(id,user_id,collection_id,kind,service,timestamp,payload) VALUES(%s,%s,%s,'log','unknown',%s,%s)", ('auto-trigger-' + job['id'], episode['user_id'], job['collection_id'], observation.get('timestamp'), json.dumps(observation)))
+                summary = json.loads(conn.execute("SELECT summary FROM collections WHERE id=%s", (job['collection_id'],)).fetchone()['summary'])
+                summary['observations'] += 1
+                summary['input_bytes'] += len(json.dumps(observation).encode())
+                summary['services'] = sorted(set(summary['services']) | {'unknown'})
+                summary['kinds'] = sorted(set(summary['kinds']) | {'log'})
+                summary['trigger_note'] = observation['source_note']
+                summary['automatic_issue_id'] = episode['issue_id']
+                summary['missing_timestamps'] += int(observation.get('timestamp') is None)
+                conn.execute("UPDATE collections SET summary=%s WHERE id=%s", (json.dumps(summary), job['collection_id']))
+                conn.execute("INSERT INTO automatic_attempt_imports VALUES(%s,%s) ON CONFLICT DO NOTHING", (attempt['id'], job['id']))
+                conn.execute("UPDATE automatic_attempts SET import_id=%s,state='importing',error=NULL WHERE id=%s", (job['id'], attempt['id']))
+                conn.execute("UPDATE automatic_incidents SET state='importing',error=NULL WHERE id=%s", (episode['id'],))
+
 
     @staticmethod
     def defer(conn, episode, attempt, reason):

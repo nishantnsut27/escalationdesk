@@ -200,7 +200,8 @@ FROM evidence e WHERE e.id=i.evidence_id;
 """
 
 AUTOMATIC_INCIDENTS = (Path(__file__).parent / "migrations" / "006_automatic_incidents.sql").read_text(encoding="utf-8")
-MIGRATIONS = ((1, SCHEMA), (2, ACCOUNT_EMAIL), (3, EVIDENCE_ANALYSIS), (4, SIGNATURES_V2), (5, EVIDENCE_TIMESTAMPS), (6, AUTOMATIC_INCIDENTS))
+AUTOMATION_HANDOFFS = (Path(__file__).parent / "migrations" / "007_automation_handoffs.sql").read_text(encoding="utf-8")
+MIGRATIONS = ((1, SCHEMA), (2, ACCOUNT_EMAIL), (3, EVIDENCE_ANALYSIS), (4, SIGNATURES_V2), (5, EVIDENCE_TIMESTAMPS), (6, AUTOMATIC_INCIDENTS), (7, AUTOMATION_HANDOFFS))
 
 BACKFILL_BATCH_SIZE = 64
 TAG_BACKFILLS = {

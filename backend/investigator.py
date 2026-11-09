@@ -169,6 +169,10 @@ def collect_baseline(tools, record, rows=None):
         tools.seen.update({row["id"]: row for row in chosen})
         context.records = {row["id"]: model_observation(row) for row in chosen}
         context.trigger_sources = {anchor} if anchor and anchor in context.records else set()
+        if anchor:
+            event = next((row['id'] for row in chosen if row.get('source_dataset') == 'errors' and row.get('source_issue_id')), None)
+            if event:
+                context.trigger_sources.add(event)
         context.selected_trace = next((row["trace_id"] for row in chosen if row.get("trace_id") and
                                        (row.get("exception_type") or row.get("stack_trace") or row.get("level") == "error")), None)
         record("select_evidence_blocks", {"version": selection["version"]}, {"records": chosen, "omitted_groups": selection["omitted_observations"]})
@@ -490,6 +494,10 @@ class Investigator:
             stage("validating_report")
             try:
                 validate_report(state["report"], tools, concise=True)
+                if usage.get('automatic_incident_id') and state['report']['assessment'] == 'supported':
+                    cited = {ref for finding in state['report']['supporting_evidence'] for ref in finding['evidence_ids']}
+                    if not any(tools.seen[ref].get('source_dataset') != 'issue' for ref in cited):
+                        raise ValueError('A supported incident assessment must cite collected evidence beyond the issue title.')
                 if usage.get("assessment_constraint") and (state["report"]["assessment"] != "inconclusive" or state["report"]["origin"] != "unknown"):
                     raise ValueError("The available symptom-only observations cannot establish an internal cause.")
             except (ValueError, TypeError, KeyError) as exc:

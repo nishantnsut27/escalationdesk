@@ -47,7 +47,7 @@ def public_connection(row):
 async def listing(request):
     owner = user(request)
     return JSONResponse({"configured": configured(), "public_url": config.PUBLIC_URL,
-        "connections": [public_connection(r) for r in db.all_rows("SELECT * FROM sentry_connections WHERE user_id=%s ORDER BY created_at DESC", (owner["id"],))],
+        "connections": [public_connection(r) for r in db.all_rows("SELECT * FROM sentry_connections WHERE user_id=%s AND state<>'disconnected' ORDER BY created_at DESC", (owner["id"],))],
         "imports": [public_import(r) for r in db.all_rows("SELECT * FROM sentry_imports WHERE user_id=%s ORDER BY created_at DESC LIMIT 50", (owner["id"],))]})
 
 
@@ -168,6 +168,7 @@ def finish_coverage(conn, collection_id, message):
 async def disconnect(request):
     row = connection(request, True)
     with db.connection() as conn:
+        db.lock(conn)
         conn.execute("DELETE FROM sentry_oauth_states WHERE user_id=%s", (row["user_id"],))
         conn.execute("UPDATE sentry_connections SET state='disconnected',credentials=NULL,expires_at=0,generation=generation+1 WHERE id=%s", (row["id"],))
         cancel_jobs(conn, row["id"])
@@ -194,7 +195,7 @@ async def webhook(request):
         installation = value.get("installation", {}).get("uuid", "")
         if not INSTALLATION.fullmatch(installation):
             raise ValueError()
-    except (ValueError, TypeError, AttributeError):
+    except (ValueError, TypeError, AttributeError, RecursionError):
         raise HTTPException(400, "Invalid installation notification.") from None
     if request.headers.get("sentry-hook-resource") == "issue":
         from .automation import accept
@@ -203,6 +204,7 @@ async def webhook(request):
     if request.headers.get("sentry-hook-resource") != "installation" or value.get("action") not in {"created", "deleted"}:
         return JSONResponse({"ok": True, "ignored": True})
     with db.connection() as conn:
+        db.lock(conn)
         added = conn.execute("INSERT INTO sentry_deliveries VALUES(%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING digest", (hashlib.sha256(raw).hexdigest(), installation, value["action"], db.now())).fetchone()
         if added and value["action"] == "deleted":
             row = conn.execute("SELECT id FROM sentry_connections WHERE installation_id=%s", (installation,)).fetchone()

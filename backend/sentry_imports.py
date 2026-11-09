@@ -30,6 +30,8 @@ def query_spec(connection, project, dataset, options, cursor=None):
     org = connection["organization"]
     if dataset == "errors":
         params["full"] = "true"
+        if options.get('issue_id'):
+            return f'/api/0/organizations/{org}/issues/{options["issue_id"]}/events/', params
         return f'/api/0/projects/{org}/{project["slug"]}/events/', params
     params.update(dataset=dataset, project=project["id"], field=FIELDS[dataset], per_page=100, sort="timestamp")
     return f"/api/0/organizations/{org}/events/", params
@@ -258,6 +260,11 @@ class ImportWorker:
             for source in records:
                 try:
                     row, changes, truncated = normalize(source, dataset, project, connection)
+                    if dataset == 'errors' and options.get('issue_id'):
+                        returned_issue = source.get('groupID', source.get('issue_id'))
+                        if returned_issue is not None and str(returned_issue) != options['issue_id']:
+                            raise ValueError('Wrong issue in response')
+                        row['source_issue_id'] = options['issue_id']
                 except (ValueError, TypeError, AttributeError, HTTPException, RecursionError):
                     summary["malformed_records"] += 1
                     continue
@@ -371,6 +378,8 @@ class ImportWorker:
             final, error = "partial" if summary["observations"] else "failed", "Import failed unexpectedly. Saved observations remain available."
         finally:
             summary["coverage"] = "Bounded Sentry snapshot; API retention, sampling and dataset access may limit coverage. " + (error or final + ".")
+            if summary.get('automatic_issue_id'):
+                summary['coverage'] += ' Automatic assessment uses this issue’s events and their recorded trace links; unlinked project context remains available for inspection.'
             with db.connection() as conn:
                 changed = conn.execute("UPDATE sentry_imports SET state=%s,completed_at=%s,error=%s,progress=%s WHERE id=%s AND state IN ('queued','running','rate_limited') RETURNING id",
                     (final, db.now(), error, json.dumps({"observations": summary["observations"], "datasets": summary["datasets"]}), job["id"])).fetchone()

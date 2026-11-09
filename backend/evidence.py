@@ -71,10 +71,19 @@ class EvidenceTools:
         self.supplied = set()
         self.last_excerpts = []
         self.selection = {}
+        self.incident_source_ids = None
 
     def snapshot(self):
         from .selection import fetch_owned
-        return fetch_owned(self)
+        rows = fetch_owned(self)
+        issue = json.loads(self.collection['summary']).get('automatic_issue_id') if self.collection else None
+        if issue:
+            anchors = [row for row in rows if row.get('source_issue_id') == issue]
+            traces = {row['trace_id'] for row in anchors if row.get('trace_id')}
+            scoped = [row for row in rows if row.get('source_issue_id') == issue or row.get('trace_id') in traces]
+            self.incident_source_ids = {row['id'] for row in scoped}
+            return scoped
+        return rows
 
     def call(self, name, arguments):
         if name not in TOOL_NAMES or not isinstance(arguments, dict):
@@ -115,7 +124,7 @@ class EvidenceTools:
             return ({"configured_edges": [], "note": "No configured topology supplied. Missing trace links are not inferred."}
                     if self.collection else {"configured_edges": [["gateway", "order"], ["order", "payment"]]})
         kind = {"search_logs": "log", "get_metrics": "metric", "find_traces": "span", "get_trace": "span"}[name]
-        rows = db.evidence(self.run_id, self.owner, kind, limit=limit + (1 if self.groq else 0), collection_id=self.collection_id, **args)
+        rows = db.evidence(self.run_id, self.owner, kind, limit=limit + (1 if self.groq else 0), collection_id=self.collection_id, source_ids=self.incident_source_ids, **args)
         selected = rows[:limit]
         self.seen.update({row["id"]: row for row in selected})
         if not self.groq:
