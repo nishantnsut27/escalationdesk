@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { ArrowRight, ArrowUpRight, Fingerprint, Layers3, Plus, Search } from 'lucide-react'
 import { api, userMessage, type Collection, type CollectionDetail, type Investigation, type InvestigationItem } from './api'
+import { DATA_FRESH_MS, DATA_STALE_MS, canonicalDataPath, dataCacheKey, dataCacheRevision, subscribeDataCache, readDataCache, requestData } from './data-cache'
 import { useRoute, navigate, routeHref, logHref } from './routes'
 import { Button } from './components/ui/button'
 import { AnalysisActionButton } from './components/analysis-action'
@@ -11,24 +12,68 @@ import { ImportCoverage } from './imports'
 import { useWritePermission } from './account'
 
 export function useData<T>(path: string, refreshWhile?: (value: T) => boolean) {
-  const [value, setValue] = useState<T | null>(null), [error, setError] = useState(''), [attempt, setAttempt] = useState(0)
-  const refresh = useRef(refreshWhile)
+  const revision = useSyncExternalStore(subscribeDataCache, dataCacheRevision, dataCacheRevision)
+  const key = dataCacheKey(path), identity = `${revision}:${key || canonicalDataPath(path)}`
+  const [state, setState] = useState<{ identity: string; value: T | null; error: string; storedAt: number } | null>(null)
+  const [attempt, setAttempt] = useState(0)
+  const refresh = useRef(refreshWhile), forceNext = useRef(false)
   refresh.current = refreshWhile
+  const cached = readDataCache<T>(path)
+  const current = state?.identity === identity ? state : null
+  const value = current && Date.now() - current.storedAt < DATA_STALE_MS ? current.value : cached?.value ?? null
   useEffect(() => {
-    let alive = true, timer: ReturnType<typeof setTimeout>
-    setValue(null); setError('')
-    async function read() {
-      try {
-        const result = await api<T>(path)
-        if (!alive) return
-        setValue(result); setError('')
-        if (refresh.current?.(result)) timer = setTimeout(read, 2500)
-      } catch (e) { if (alive) setError(userMessage(e)) }
+    let alive = true, timer: ReturnType<typeof setTimeout> | undefined, expiry: ReturnType<typeof setTimeout> | undefined
+    const cached = readDataCache<T>(path)
+    const available = () => !document.hidden && navigator.onLine !== false
+    const interval = (result?: T) => result !== undefined && refresh.current?.(result) ? 2500 : DATA_FRESH_MS
+    const expire = (storedAt: number) => {
+      clearTimeout(expiry)
+      expiry = setTimeout(() => {
+        if (alive) setState({ identity, value: null, storedAt: 0, error: 'Saved data is out of date. Retry to load the latest information.' })
+      }, Math.max(0, DATA_STALE_MS - (Date.now() - storedAt)))
     }
-    void read()
-    return () => { alive = false; clearTimeout(timer) }
-  }, [path, attempt])
-  return { value, error, retry: () => setAttempt(value => value + 1) }
+    setState({ identity, value: cached?.value ?? null, error: '', storedAt: cached?.storedAt ?? 0 })
+    if (cached) expire(cached.storedAt)
+    const schedule = (result?: T, delay = interval(result)) => {
+      clearTimeout(timer)
+      if (alive && key && available()) timer = setTimeout(() => { void read(false) }, delay)
+    }
+    async function read(force: boolean) {
+      clearTimeout(timer)
+      if (!alive || !key || !available()) return
+      try {
+        const result = await requestData<T>(path, signal => api<T>(path, undefined, 'POST', signal), force)
+        if (!alive) return
+        const storedAt = readDataCache<T>(path)?.storedAt ?? Date.now()
+        setState({ identity, value: result, error: '', storedAt })
+        expire(storedAt); schedule(result)
+      } catch (e) {
+        if (!alive) return
+        if (!(e instanceof DOMException && e.name === 'AbortError')) {
+          setState(previous => ({ identity, value: previous?.identity === identity ? previous.value : null,
+            storedAt: previous?.identity === identity ? previous.storedAt : 0, error: userMessage(e) }))
+        }
+        schedule(readDataCache<T>(path)?.value)
+      }
+    }
+    const resume = () => {
+      clearTimeout(timer)
+      if (available()) void read(false)
+    }
+    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('online', resume)
+    window.addEventListener('offline', resume)
+    const force = forceNext.current; forceNext.current = false
+    if (!cached || !cached.fresh || force) void read(force)
+    else schedule(cached.value, Math.min(interval(cached.value), Math.max(0, DATA_FRESH_MS - cached.age)))
+    return () => {
+      alive = false; clearTimeout(timer); clearTimeout(expiry)
+      document.removeEventListener('visibilitychange', resume)
+      window.removeEventListener('online', resume)
+      window.removeEventListener('offline', resume)
+    }
+  }, [path, identity, attempt, key])
+  return { value, error: current?.error || '', retry: () => { forceNext.current = true; setAttempt(value => value + 1) } }
 }
 export function InvestigationList({ items }: { items: InvestigationItem[] }) {
   if (!items.length) return <EmptyState title="No investigations yet">Select saved evidence and choose Investigate to create your first assessment.</EmptyState>
@@ -55,12 +100,12 @@ export function CollectionWorkspace({ id, readOnly = false }: { id: string; read
 export function Investigations({ id, readOnly = false }: { id?: string; readOnly?: boolean }) {
   const route = useRoute(), offset = Math.max(0, Number(route.params.get('offset')) || 0)
   const path = id ? '/investigations/' + encodeURIComponent(id) : '/investigations?limit=51&offset=' + offset + (route.params.get('collection_id') ? '&collection_id=' + encodeURIComponent(route.params.get('collection_id')!) : '')
-  const { value, error, retry } = useData<Investigation | InvestigationItem[]>(path)
+  const { value, error, retry } = useData<Investigation | InvestigationItem[]>(path,
+    item => (Array.isArray(item) ? item : [item]).some(investigation => ['queued','running','quota_waiting'].includes(investigation.state)))
   const canWrite = useWritePermission(), [busy, setBusy] = useState(false), [actionError, setActionError] = useState('')
   const [updated, setUpdated] = useState<Investigation | null>(null)
   useEffect(() => { setUpdated(null) }, [id, value])
   const investigation = !Array.isArray(value) ? updated || value : null
-  useEffect(() => { if (!investigation || !['queued','running','quota_waiting'].includes(investigation.state)) return; let alive = true; const timer = setTimeout(() => api<Investigation>(path).then(item => { if (alive) setUpdated(item) }).catch(e => { if (alive) setActionError(userMessage(e)) }), 2500); return () => { alive = false; clearTimeout(timer) } }, [investigation, path])
   async function again() { if (!investigation) return; setBusy(true); try { const result = await api<{ id: string }>(investigation.collection_id ? '/collections/' + investigation.collection_id + '/investigations' : '/incidents/' + investigation.incident_id + '/investigations', { engine: 'groq', triage: true }); navigate('investigations', result.id) } catch (e) { setActionError(userMessage(e)) } finally { setBusy(false) } }
   return <><PageHeading eyebrow={readOnly ? 'RECORDED DEMO · READ-ONLY' : 'INVESTIGATIONS'} title={id ? 'Investigation report' : 'Investigations'} actions={id && investigation && !readOnly && !['queued','running','quota_waiting'].includes(investigation.state) && <AnalysisActionButton busy={busy} disabled={!canWrite || busy} onClick={again}><Fingerprint size={15} />{busy ? 'Submitting…' : ['failed','interrupted'].includes(investigation.state) ? 'Retry investigation' : 'New investigation'}</AnalysisActionButton>}>{id ? 'A saved assessment, its supporting observations and what remains unknown.' : 'Reopen an assessment or follow an active investigation.'}</PageHeading>{error && <ErrorState error={error} retry={retry} />}{actionError && <ErrorState error={actionError} />}{!value ? !error && <LoadingState layout={id ? "detail" : "investigations"} /> : <Card>{Array.isArray(value) ? <><InvestigationList items={value.slice(0, 50)} /><div className="pagination"><span>Investigations {offset + (value.length ? 1 : 0)}–{offset + Math.min(50, value.length)}</span><div><Button variant="secondary" size="sm" disabled={offset === 0} onClick={() => navigate('investigations', '', { collection_id: route.params.get('collection_id'), offset: Math.max(0, offset - 50) })}>Previous</Button><Button variant="secondary" size="sm" disabled={value.length <= 50} onClick={() => navigate('investigations', '', { collection_id: route.params.get('collection_id'), offset: offset + 50 })}>Next</Button></div></div></> : <ReportView investigation={investigation || undefined} readOnly={readOnly} onUpdate={setUpdated} />}</Card>}</>
 }

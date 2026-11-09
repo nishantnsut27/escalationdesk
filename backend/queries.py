@@ -113,9 +113,12 @@ def histogram(owner, *, buckets=32, **scope):
     # Aggregate every matching log, independently of the row-page limit.
     filters = Filters(**{**scope.pop("filters", Filters()).values(), "kind": "log"})
     statement, args = scope_sql(owner, filters=filters, **scope)
-    extent = db.one("SELECT MIN(i.observed_at) first,MAX(i.observed_at) last,COUNT(*) total,COUNT(i.observed_at) timed" + statement, args)
     timeless, timeless_args = scope_sql(owner, filters=filters, include_time=False, **scope)
-    unknown = db.one("SELECT COUNT(*) n" + timeless + " AND i.observed_at IS NULL", timeless_args)["n"]
+    extent, unknown_row = db.read_many([
+        ("SELECT MIN(i.observed_at) first,MAX(i.observed_at) last,COUNT(*) total,COUNT(i.observed_at) timed" + statement, args, "one"),
+        ("SELECT COUNT(*) n" + timeless + " AND i.observed_at IS NULL", timeless_args, "one"),
+    ])
+    unknown = unknown_row["n"]
     result = {"buckets": [], "total": extent["total"], "timed": extent["timed"], "unknown_timestamps": unknown,
               "note": "Log observations from saved snapshots. Unknown timestamps are excluded from time buckets."}
     if not extent["first"]:
@@ -175,10 +178,13 @@ def request_flow(owner, *, filters, **scope):
 
 def summary(owner, **scope):
     statement, args = scope_sql(owner, **scope)
-    counts = db.one("SELECT COUNT(*) observations,COUNT(DISTINCT e.service) FILTER (WHERE e.service<>'unknown') services,COUNT(*) FILTER (WHERE e.kind='log' AND i.level='error') error_logs,COUNT(*) FILTER (WHERE i.observed_at IS NULL) missing_timestamps,COUNT(*) FILTER (WHERE e.service='unknown') missing_services,COUNT(*) FILTER (WHERE i.trace_id IS NOT NULL OR i.request_id IS NOT NULL) correlated,COUNT(*) FILTER (WHERE e.kind='span') spans,COUNT(*) FILTER (WHERE e.kind='metric') metrics" + statement, args)
-    errors = db.all_rows("SELECT e.service,COUNT(*) observations" + statement + " AND e.kind='log' AND i.level='error' GROUP BY e.service ORDER BY observations DESC,e.service LIMIT 12", args)
-    tags = db.all_rows("SELECT t.signature,COUNT(*) observations FROM evidence_error_tags t JOIN evidence e ON e.id=t.evidence_id JOIN evidence_index i ON i.evidence_id=e.id WHERE " + statement.split(" WHERE ", 1)[1] + " AND t.version=%s AND e.kind='log' AND (i.level='error' OR t.signature<>'unknown') GROUP BY t.signature ORDER BY observations DESC,t.signature", (*args, VERSION))
-    counts["note"] = "Observations from saved snapshots; these are not unique requests or a failure rate."
     timeless, timeless_args = scope_sql(owner, **{**scope, "include_time": False})
-    counts["unknown_time_in_scope"] = db.one("SELECT COUNT(*) n" + timeless + " AND i.observed_at IS NULL", timeless_args)["n"]
+    counts, errors, tags, timeless_row = db.read_many([
+        ("SELECT COUNT(*) observations,COUNT(DISTINCT e.service) FILTER (WHERE e.service<>'unknown') services,COUNT(*) FILTER (WHERE e.kind='log' AND i.level='error') error_logs,COUNT(*) FILTER (WHERE i.observed_at IS NULL) missing_timestamps,COUNT(*) FILTER (WHERE e.service='unknown') missing_services,COUNT(*) FILTER (WHERE i.trace_id IS NOT NULL OR i.request_id IS NOT NULL) correlated,COUNT(*) FILTER (WHERE e.kind='span') spans,COUNT(*) FILTER (WHERE e.kind='metric') metrics" + statement, args, "one"),
+        ("SELECT e.service,COUNT(*) observations" + statement + " AND e.kind='log' AND i.level='error' GROUP BY e.service ORDER BY observations DESC,e.service LIMIT 12", args, "all"),
+        ("SELECT t.signature,COUNT(*) observations FROM evidence_error_tags t JOIN evidence e ON e.id=t.evidence_id JOIN evidence_index i ON i.evidence_id=e.id WHERE " + statement.split(" WHERE ", 1)[1] + " AND t.version=%s AND e.kind='log' AND (i.level='error' OR t.signature<>'unknown') GROUP BY t.signature ORDER BY observations DESC,t.signature", (*args, VERSION), "all"),
+        ("SELECT COUNT(*) n" + timeless + " AND i.observed_at IS NULL", timeless_args, "one"),
+    ])
+    counts["note"] = "Observations from saved snapshots; these are not unique requests or a failure rate."
+    counts["unknown_time_in_scope"] = timeless_row["n"]
     return {"counts": counts, "top_services": errors, "signatures": [{**row, "label": LABELS.get(row["signature"], row["signature"])} for row in tags], "catalogue": catalogue()}

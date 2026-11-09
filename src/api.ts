@@ -1,3 +1,5 @@
+import { invalidateDataCache } from './data-cache'
+
 export class ApiError extends Error {
   constructor(message: string, public status: number) { super(message) }
 }
@@ -10,19 +12,22 @@ export function userMessage(error: unknown, fallback = 'The request could not be
 }
 let csrf = ''
 export function setCsrf(value: string) { csrf = value }
-export async function api<T>(path: string, body?: unknown, method: 'POST' | 'PUT' = 'POST'): Promise<T> {
+export async function api<T>(path: string, body?: unknown, method: 'POST' | 'PUT' = 'POST', signal?: AbortSignal): Promise<T> {
   const requestSession = csrf
   const response = await fetch('/api' + path, {
     credentials: 'same-origin',
+    signal,
     ...(body !== undefined ? { method, headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(body) } : {}),
   })
   let data
   try { data = await response.json() }
   catch { throw new ApiError('The server could not complete this request. Please try again shortly.', response.status) }
+  signal?.throwIfAborted()
   if (!response.ok) {
     if (response.status === 401 && requestSession === csrf && !path.startsWith('/auth/') && typeof window !== 'undefined') window.dispatchEvent(new Event('tracedesk:session-expired'))
     throw new ApiError(userMessage(data.error || 'The request could not be completed.'), response.status)
   }
+  if (body !== undefined && requestSession === csrf) invalidateDataCache()
   return data as T
 }
 export type User = { id: string; name: string; email: string; role: 'regular' | 'demo'; read_only: boolean; email_verified: boolean }

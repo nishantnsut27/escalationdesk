@@ -131,8 +131,10 @@ def investigations(request):
 
 
 def errors(request):
-    user, scope = account_scope(request)
-    return JSONResponse({**queries.summary(**scope), "investigation_categories": classification_counts(user, scope["collection_id"])})
+    with db.request_connection():
+        user, scope = account_scope(request)
+        result = {**queries.summary(**scope), "investigation_categories": classification_counts(user, scope["collection_id"])}
+    return JSONResponse(result)
 
 
 def account_rows(request):
@@ -154,20 +156,22 @@ def classification_counts(user, collection=None):
 
 
 def dashboard(request):
-    user, scope = account_scope(request)
-    condition = "user_id=%s" + (" AND EXISTS (SELECT 1 FROM demo_cases d WHERE d.collection_id=collections.id)" if auth.is_demo(user) else "")
-    collections = [public_collection(row) for row in db.all_rows("SELECT * FROM collections WHERE " + condition + " ORDER BY created_at DESC,id DESC", (user["id"],))]
-    selected = [row for row in collections if not scope["collection_id"] or row["id"] == scope["collection_id"]]
-    overview = queries.summary(**scope)
-    overview["counts"]["collections"] = len(selected)
-    filters = queries.Filters(**{**scope["filters"].values(), "level": "error"})
-    return JSONResponse({**overview, "collections": collections,
-        "trend": queries.histogram(**{**scope, "filters": filters}),
-        "recent_investigations": investigations_for(user, scope["collection_id"], limit=8),
-        "investigation_categories": classification_counts(user, scope["collection_id"]),
-        "last_import": selected[0]["created_at"] if selected else None,
-        "connections": [] if auth.is_demo(user) else db.all_rows("SELECT id,organization,region,state,checked_at FROM sentry_connections WHERE user_id=%s ORDER BY created_at DESC", (user["id"],)),
-        "monitoring_note": "Saved evidence snapshots. Live infrastructure monitoring is not connected."})
+    with db.request_connection():
+        user, scope = account_scope(request)
+        condition = "user_id=%s" + (" AND EXISTS (SELECT 1 FROM demo_cases d WHERE d.collection_id=collections.id)" if auth.is_demo(user) else "")
+        collections = [public_collection(row) for row in db.all_rows("SELECT * FROM collections WHERE " + condition + " ORDER BY created_at DESC,id DESC", (user["id"],))]
+        selected = [row for row in collections if not scope["collection_id"] or row["id"] == scope["collection_id"]]
+        overview = queries.summary(**scope)
+        overview["counts"]["collections"] = len(selected)
+        filters = queries.Filters(**{**scope["filters"].values(), "level": "error"})
+        result = {**overview, "collections": collections,
+            "trend": queries.histogram(**{**scope, "filters": filters}),
+            "recent_investigations": investigations_for(user, scope["collection_id"], limit=8),
+            "investigation_categories": classification_counts(user, scope["collection_id"]),
+            "last_import": selected[0]["created_at"] if selected else None,
+            "connections": [] if auth.is_demo(user) else db.all_rows("SELECT id,organization,region,state,checked_at FROM sentry_connections WHERE user_id=%s ORDER BY created_at DESC", (user["id"],)),
+            "monitoring_note": "Saved evidence snapshots. Live infrastructure monitoring is not connected."}
+    return JSONResponse(result)
 
 
 routes = [Route("/api/dashboard", dashboard), Route("/api/errors", errors), Route("/api/investigations", investigations), Route("/api/logs", account_rows)]

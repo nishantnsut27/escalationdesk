@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
-import type { Evidence } from './api'
+import { api, type Evidence } from './api'
+import { dataCacheKey, readDataCache, requestData } from './data-cache'
+import { preloadRoute } from './route-preload'
 
 export type Route = { page: string; id: string; params: URLSearchParams }
 const aliases: Record<string, string> = { overview: 'dashboard', history: 'investigations', evidence: 'collections', imports: 'import' }
@@ -66,8 +68,38 @@ export function handleAppLink(event: MouseEvent) {
   event.preventDefault()
   navigateHref(legacy ? routeHref(route.page, route.id, Object.fromEntries(route.params)) : url.pathname + url.search)
 }
+let prefetches = 0
+let lastPrefetch = 0
+function preloadAppLink(event: Event) {
+  const anchor = event.target instanceof Element ? event.target.closest('a') : null
+  if (!anchor) return
+  const url = new URL(anchor.href, window.location.href)
+  if (url.origin !== window.location.origin) return
+  const route = parseRoute(url.pathname + url.search)
+  if (route.page !== 'not-found') void preloadRoute(route.page).catch(() => {})
+  if (route.id || document.hidden || navigator.onLine === false || prefetches >= 2) return
+  let path = ''
+  if (route.page === 'dashboard' || route.page === 'errors') {
+    const query = evidenceFilters(route.params)
+    if (route.params.get('collection_id')) query.set('collection_id', route.params.get('collection_id')!)
+    path = '/' + route.page + '?' + query
+  } else if (route.page === 'collections') path = '/collections'
+  else if (route.page === 'investigations') path = '/investigations?limit=51&offset=' + Math.max(0, Number(route.params.get('offset')) || 0) + (route.params.get('collection_id') ? '&collection_id=' + encodeURIComponent(route.params.get('collection_id')!) : '')
+  if (!path || !dataCacheKey(path) || readDataCache(path)?.fresh || Date.now() - lastPrefetch < 1000) return
+  lastPrefetch = Date.now(); prefetches++
+  void requestData(path, signal => api(path, undefined, 'POST', signal)).catch(() => {}).finally(() => { prefetches-- })
+}
 export function useAppNavigation() {
-  useEffect(() => { document.addEventListener('click', handleAppLink); return () => document.removeEventListener('click', handleAppLink) }, [])
+  useEffect(() => {
+    document.addEventListener('click', handleAppLink)
+    document.addEventListener('pointerover', preloadAppLink, { passive: true })
+    document.addEventListener('focusin', preloadAppLink)
+    return () => {
+      document.removeEventListener('click', handleAppLink)
+      document.removeEventListener('pointerover', preloadAppLink)
+      document.removeEventListener('focusin', preloadAppLink)
+    }
+  }, [])
 }
 export function useRoute() {
   const [href, setHref] = useState(() => { if (typeof window === 'undefined') return ''; normalizeLocation(); return currentRouteHref() })

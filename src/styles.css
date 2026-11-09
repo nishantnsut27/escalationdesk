@@ -133,7 +133,11 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 }
-* { box-sizing: border-box; }
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track, *::-webkit-scrollbar-track-piece, *::-webkit-scrollbar-corner { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--border-strong); border: 2px solid transparent; background-clip: padding-box; border-radius: 999px; }
+*::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 body { margin: 0; min-width: 320px; }
 button, input, select, textarea { font: inherit; }
 button, a, input, select, textarea, summary { -webkit-tap-highlight-color: transparent; }
@@ -463,7 +467,7 @@ caption { color: var(--muted-foreground); text-align: left; font-size: 12px; pad
 .flow-help { margin: 12px 0; }
 .timeline-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding-top: 12px; font-size: 12px; color: var(--muted-foreground); }
 .timeline-heading > span { display: inline-flex; align-items: center; gap: 8px; }
-.timeline-scroll { max-height: 610px; overflow: auto; padding: 4px 12px 12px 0; scrollbar-color: var(--border-strong) var(--card); }
+.timeline-scroll { max-height: 610px; overflow: auto; padding: 4px 12px 12px 0; }
 .timeline-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 18px; }
 .timeline-list li { display: grid; grid-template-columns: 132px minmax(0,1fr); position: relative; gap: 30px; align-items: start; }
 .timeline-list li::before { content: ''; position: absolute; left: 146px; top: 0; bottom: -18px; width: 1px; background: var(--border); }

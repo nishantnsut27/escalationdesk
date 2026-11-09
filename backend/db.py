@@ -2,6 +2,9 @@
 import json
 import os
 import uuid
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from .config import DATA
 from . import postgres
@@ -11,6 +14,8 @@ Error = postgres.psycopg.Error
 IntegrityError = postgres.psycopg.IntegrityError
 _target = None
 _schema = None
+_request_connection = ContextVar("tracedesk_request_connection", default=None)
+_request_timing = ContextVar("tracedesk_request_timing", default=None)
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -30,6 +35,37 @@ def schema():
 
 def connection():
     return postgres.connection(target(),schema())
+
+@contextmanager
+def request_connection():
+    existing = _request_connection.get()
+    if existing is not None:
+        yield existing
+        return
+    with connection() as conn:
+        token = _request_connection.set(conn)
+        try:
+            yield conn
+        finally:
+            _request_connection.reset(token)
+
+def begin_request_timing():
+    return _request_timing.set({"db": 0.0})
+
+def end_request_timing(token):
+    metrics = _request_timing.get() or {"db": 0.0}
+    _request_timing.reset(token)
+    return metrics
+
+@contextmanager
+def _timed_database():
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        metrics = _request_timing.get()
+        if metrics is not None:
+            metrics["db"] += (time.perf_counter() - started) * 1000
 
 lock = postgres.lock
 close = postgres.close
@@ -66,17 +102,50 @@ def init():
         conn.execute("UPDATE incidents SET state='interrupted' WHERE state='open'")
 
 def one(statement,args=()):
-    with connection() as conn:
+    conn = _request_connection.get()
+    if conn is None:
+        with request_connection():
+            return one(statement,args)
+    with _timed_database():
         row=conn.execute(statement,args).fetchone()
-        return dict(row) if row else None
+    return dict(row) if row else None
 
 def all_rows(statement,args=()):
-    with connection() as conn:
-        return [dict(row) for row in conn.execute(statement,args)]
+    conn = _request_connection.get()
+    if conn is None:
+        with request_connection():
+            return all_rows(statement,args)
+    with _timed_database():
+        rows = conn.execute(statement,args).fetchall()
+    return [dict(row) for row in rows]
 
 def execute(statement,args=()):
-    with connection() as conn:
+    conn = _request_connection.get()
+    if conn is None:
+        with request_connection():
+            return execute(statement,args)
+    with _timed_database():
         conn.execute(statement,args)
+
+def read_many(statements):
+    """Pipeline independent SELECTs on the current request connection."""
+    conn = _request_connection.get()
+    if conn is None:
+        with request_connection():
+            return read_many(statements)
+    with _timed_database():
+        cursors = []
+        with conn.pipeline():
+            for statement,args,mode in statements:
+                cursors.append((conn.execute(statement,args),mode))
+        results = []
+        for cursor,mode in cursors:
+            if mode == "one":
+                row = cursor.fetchone()
+                results.append(dict(row) if row else None)
+            else:
+                results.append([dict(row) for row in cursor.fetchall()])
+        return results
 
 def investigation_scope(investigation):
     collection_id = investigation.get("collection_id")

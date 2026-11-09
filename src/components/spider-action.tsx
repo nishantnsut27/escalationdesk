@@ -41,18 +41,52 @@ export default function SpiderAction({ children, disabled = false, busy = false,
     const renderer = stage.current?.firstElementChild
     if (!(renderer instanceof HTMLElement) || disabled) return
     let inside = false
+    let last: { clientX: number; clientY: number; pointerType: string } | null = null
+    const dispatch = (type: 'pointermove' | 'pointerleave', point: { clientX: number; clientY: number; pointerType: string }) => {
+      const box = renderer.getBoundingClientRect()
+      const localX = box.width ? (point.clientX - box.left) * renderer.offsetWidth / box.width : 0
+      const localY = box.height ? (point.clientY - box.top) * renderer.offsetHeight / box.height : 0
+      const forwarded = new PointerEvent(type, { clientX: point.clientX, clientY: point.clientY, pointerType: point.pointerType, bubbles: true })
+      Object.defineProperties(forwarded, { offsetX: { value: localX }, offsetY: { value: localY } })
+      renderer.dispatchEvent(forwarded)
+    }
     // Extra drawing space must not intercept adjacent links. Forward only pointer
     // movement to the original renderer; clicks stay on the real native button.
     const move = (event: PointerEvent) => {
-      if (event.pointerType === 'touch' || renderer.contains(event.target as Node)) return
+      if (!event.isTrusted || event.pointerType === 'touch') return
+      last = { clientX: event.clientX, clientY: event.clientY, pointerType: event.pointerType }
+      // Suppress only the renderer's original move. Its button/descendants use
+      // different offset origins; every move must take the same normalized path.
+      if (renderer.contains(event.target as Node)) event.stopPropagation()
       const box = renderer.getBoundingClientRect()
       const nearby = event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom
-      if (nearby) renderer.dispatchEvent(new PointerEvent('pointermove', { clientX: event.clientX, clientY: event.clientY, pointerType: event.pointerType }))
-      else if (inside) renderer.dispatchEvent(new PointerEvent('pointerleave'))
+      if (nearby) dispatch('pointermove', last)
+      else if (inside) dispatch('pointerleave', last)
       inside = nearby
     }
-    document.addEventListener('pointermove', move, { passive: true })
-    return () => document.removeEventListener('pointermove', move)
+    const resync = () => {
+      if (!last) return
+      const box = renderer.getBoundingClientRect()
+      const nearby = last.clientX >= box.left && last.clientX <= box.right && last.clientY >= box.top && last.clientY <= box.bottom
+      if (nearby) dispatch('pointermove', last)
+      else if (inside) dispatch('pointerleave', last)
+      inside = nearby
+    }
+    document.addEventListener('pointermove', move, { passive: true, capture: true })
+    const observer = new ResizeObserver(resync)
+    observer.observe(renderer)
+    window.addEventListener('resize', resync)
+    window.addEventListener('scroll', resync, { passive: true, capture: true })
+    window.visualViewport?.addEventListener('resize', resync)
+    window.visualViewport?.addEventListener('scroll', resync)
+    return () => {
+      document.removeEventListener('pointermove', move, true)
+      observer.disconnect()
+      window.removeEventListener('resize', resync)
+      window.removeEventListener('scroll', resync, true)
+      window.visualViewport?.removeEventListener('resize', resync)
+      window.visualViewport?.removeEventListener('scroll', resync)
+    }
   }, [disabled, palette])
 
   return <span ref={root} className="analysis-spider" data-disabled={disabled || undefined}

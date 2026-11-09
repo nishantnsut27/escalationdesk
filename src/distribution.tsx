@@ -24,6 +24,7 @@ export function ObservationDistribution({ counts }: { counts: EvidenceSummary['c
   const data = observationDistribution(counts), active = hovered || pinned
   const selected = data.find(item => item.key === active)
   const present = data.filter(item => item.value > 0)
+  const activeSector = present.some(item => item.key === active) ? active : null
   if (!counts.observations) return <EmptyState title="No observations in this scope">Import evidence or choose a wider scope to see its composition.</EmptyState>
 
   return <div className="observation-distribution">
@@ -31,8 +32,12 @@ export function ObservationDistribution({ counts }: { counts: EvidenceSummary['c
       <ChartContainer config={config} className="distribution-chart" label="Saved observations by kind. Exact values and percentages follow.">
         <PieChart accessibilityLayer={false}>
           <Pie data={present} dataKey="value" nameKey="label" cx="50%" cy="50%" innerRadius="68%" outerRadius="94%" startAngle={90} endAngle={-270} stroke="var(--card)" strokeWidth={3} isAnimationActive={false}
-            onMouseEnter={(_, index) => setHovered(present[index].key)} onMouseLeave={() => setHovered(null)}
-            shape={(props: PieSectorShapeProps) => <Sector {...props} fill={present[props.index].color} className={'distribution-sector' + (active && active !== present[props.index].key ? ' is-dimmed' : '')} />} />
+            onMouseEnter={(_, index) => setHovered(present[index]?.key || null)} onMouseLeave={() => setHovered(null)}
+            shape={(props: PieSectorShapeProps) => {
+              const payload = (props as PieSectorShapeProps & { payload?: (typeof present)[number] }).payload
+              const item = payload?.key ? present.find(entry => entry.key === payload.key) : typeof props.index === 'number' ? present[props.index] : undefined
+              return item ? <Sector {...props} fill={item.color} className={'distribution-sector' + (activeSector && activeSector !== item.key ? ' is-dimmed' : '')} /> : <g />
+            }} />
         </PieChart>
       </ChartContainer>
       <div className="distribution-center" aria-hidden="true"><strong>{(selected?.value ?? counts.observations).toLocaleString()}</strong><span>{selected?.label || 'observations'}</span><small>{selected ? percent(selected.value, counts.observations) + ' of saved evidence' : 'saved in this scope'}</small></div>

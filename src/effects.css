@@ -1,8 +1,9 @@
 /* App adapters for the Originkit effects. */
 html:has(.auth-page) { scrollbar-width: thin; scrollbar-color: var(--muted-foreground) transparent; }
-html:has(.auth-page)::-webkit-scrollbar { width: 8px; }
+html:has(.auth-page)::-webkit-scrollbar { width: 8px; height: 8px; }
 html:has(.auth-page)::-webkit-scrollbar-track { background: transparent; }
 html:has(.auth-page)::-webkit-scrollbar-thumb { background: var(--muted-foreground); border: 2px solid transparent; background-clip: padding-box; border-radius: 999px; }
+html:has(.auth-page)::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 .home-wordmark.effect-wordmark { position: relative; height: clamp(100px, 23vw, 310px); display: grid; place-items: center; color: var(--foreground); -webkit-text-stroke: 0; }
 .wordmark-static { font-size: clamp(44px, 15.5vw, 218px); }
 .wordmark-live { position: absolute; inset: 0; }

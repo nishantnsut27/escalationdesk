@@ -1,5 +1,6 @@
 import json
 import asyncio
+import time
 from contextlib import asynccontextmanager
 import httpx
 from psycopg import OperationalError
@@ -373,41 +374,62 @@ def create_app():
         OperationalError: storage_unavailable, PoolTimeout: storage_unavailable, TooManyRequests: storage_unavailable})
 
     async def security(request, call_next):
-        if request.url.path.startswith("/api/") and request.cookies.get(auth.COOKIE):
-            try:
-                user = await asyncio.to_thread(auth.current,request)
-            except HTTPException:
-                user = None
-            except (OperationalError, PoolTimeout, TooManyRequests) as exc:
-                return storage_unavailable(request, exc)
-            if user and auth.is_demo(user):
-                path = request.url.path
-                session_path = path in {"/api/auth/login", "/api/auth/demo-login", "/api/auth/logout", "/api/auth/me"}
-                read_path = path in {"/api/demo/cases", "/api/collections", "/api/dashboard", "/api/errors", "/api/investigations", "/api/logs"} or path.startswith(("/api/collections/", "/api/investigations/", "/api/evidence/"))
-                if not session_path and (request.method not in {"GET", "HEAD"} or not read_path):
-                    return JSONResponse({"error": "Demo Account is read-only. Sign in to a regular account to use this action."}, status_code=403, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
-            path = request.url.path
-            gated = (request.method == "POST" and (path == "/api/imports" or path.endswith(("/investigations", "/supplements"))
-                or (path.startswith("/api/connections/sentry/") and path.endswith(("/start", "/imports", "/check")))
-                or (path.startswith("/api/sentry-imports/") and path.endswith("/retry")))) or path == "/api/connections/sentry/callback"
-            if user and gated:
+        started = time.perf_counter()
+        timing_token = db.begin_request_timing()
+        auth_ms = 0.0
+        finished = False
+        def finish(response):
+            nonlocal finished
+            if finished:
+                return response
+            finished = True
+            metrics = db.end_request_timing(timing_token)
+            total_ms = (time.perf_counter() - started) * 1000
+            if request.url.path.startswith("/api"):
+                response.headers["Server-Timing"] = f"auth;dur={auth_ms:.1f}, db;dur={metrics['db']:.1f}, total;dur={total_ms:.1f}"
+            return response
+        try:
+            if request.url.path.startswith("/api/") and request.cookies.get(auth.COOKIE):
+                auth_started = time.perf_counter()
                 try:
-                    auth.require_verified(user)
-                except HTTPException as exc:
-                    return JSONResponse({"error": exc.detail},status_code=exc.status_code)
-        if request.method not in {"GET", "HEAD", "OPTIONS"}:
-            origin = request.headers.get("origin")
-            if origin and origin not in ORIGINS:
-                return JSONResponse({"error": "Request origin is not allowed."}, status_code=403)
-            if request.headers.get("sec-fetch-site") == "cross-site":
-                return JSONResponse({"error": "Cross-site request rejected."}, status_code=403)
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["X-Frame-Options"] = "DENY"
-        if request.url.path.startswith("/api"):
-            response.headers["Cache-Control"] = "no-store"
-        return response
+                    user = await asyncio.to_thread(auth.current,request)
+                except HTTPException:
+                    user = None
+                except (OperationalError, PoolTimeout, TooManyRequests) as exc:
+                    auth_ms = (time.perf_counter() - auth_started) * 1000
+                    return finish(storage_unavailable(request, exc))
+                auth_ms = (time.perf_counter() - auth_started) * 1000
+                if user and auth.is_demo(user):
+                    path = request.url.path
+                    session_path = path in {"/api/auth/login", "/api/auth/demo-login", "/api/auth/logout", "/api/auth/me"}
+                    read_path = path in {"/api/demo/cases", "/api/collections", "/api/dashboard", "/api/errors", "/api/investigations", "/api/logs"} or path.startswith(("/api/collections/", "/api/investigations/", "/api/evidence/"))
+                    if not session_path and (request.method not in {"GET", "HEAD"} or not read_path):
+                        return finish(JSONResponse({"error": "Demo Account is read-only. Sign in to a regular account to use this action."}, status_code=403, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}))
+                path = request.url.path
+                gated = (request.method == "POST" and (path == "/api/imports" or path.endswith(("/investigations", "/supplements"))
+                    or (path.startswith("/api/connections/sentry/") and path.endswith(("/start", "/imports", "/check")))
+                    or (path.startswith("/api/sentry-imports/") and path.endswith("/retry")))) or path == "/api/connections/sentry/callback"
+                if user and gated:
+                    try:
+                        auth.require_verified(user)
+                    except HTTPException as exc:
+                        return finish(JSONResponse({"error": exc.detail},status_code=exc.status_code))
+            if request.method not in {"GET", "HEAD", "OPTIONS"}:
+                origin = request.headers.get("origin")
+                if origin and origin not in ORIGINS:
+                    return finish(JSONResponse({"error": "Request origin is not allowed."}, status_code=403))
+                if request.headers.get("sec-fetch-site") == "cross-site":
+                    return finish(JSONResponse({"error": "Cross-site request rejected."}, status_code=403))
+            response = await call_next(request)
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["X-Frame-Options"] = "DENY"
+            if request.url.path.startswith("/api"):
+                response.headers["Cache-Control"] = "no-store"
+            return finish(response)
+        finally:
+            if not finished:
+                db.end_request_timing(timing_token)
     app.add_middleware(BaseHTTPMiddleware, dispatch=security)
     return app
 

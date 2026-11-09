@@ -53,7 +53,8 @@ function Notifications({ items }: { items: Notification[] }) {
 
 export function IncidentsWorkspace({ id = '' }: { id?: string }) {
   const route = useRoute(), offset = Math.max(0, Number(route.params.get('offset')) || 0)
-  const { value, error, retry } = useData<{ incidents: Incident[]; next_offset: number | null } | Incident>(id ? '/automatic-incidents/' + encodeURIComponent(id) : '/automatic-incidents?offset=' + offset, () => true)
+  const { value, error, retry } = useData<{ incidents: Incident[]; next_offset: number | null } | Incident>(id ? '/automatic-incidents/' + encodeURIComponent(id) : '/automatic-incidents?offset=' + offset,
+    item => 'incidents' in item ? item.incidents.some(incident => active.includes(incident.state)) : active.includes(item.state))
   const canWrite = useWritePermission(), [busy, setBusy] = useState(false), [failure, setFailure] = useState('')
   async function requestRetry() {
     setBusy(true); setFailure('')

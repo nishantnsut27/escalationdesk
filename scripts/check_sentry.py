@@ -17,7 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--pilot', action='store_true', help='Send one error issue, plus two healthy records, to the dedicated test project.')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--pilot', action='store_true', help='Send one error issue, plus two healthy records, to the dedicated test project.')
+    mode.add_argument('--mixed-errors', action='store_true', help='Send three healthy requests plus one ValueError, TypeError and KeyError with separate fingerprints.')
     parser.add_argument('--run-id', help='Reuse a pilot fingerprint to verify a genuine reopening.')
     args = parser.parse_args()
     run_id = args.run_id or uuid.uuid4().hex
@@ -31,7 +33,11 @@ def main():
         port = bound.getsockname()[1]
     started = datetime.now(timezone.utc).isoformat()
     with (directory / "test-app.log").open("w", encoding="utf-8") as log:
-        command = [sys.executable, "-m", "examples.sentry_test_app", "--port", str(port), "--run-id", run_id] + (['--new-issue'] if args.pilot else [])
+        command = [sys.executable, "-m", "examples.sentry_test_app", "--port", str(port), "--run-id", run_id]
+        if args.pilot:
+            command.append('--new-issue')
+        if args.mixed_errors:
+            command.append('--mixed-errors')
         process = subprocess.Popen(command,
             cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
@@ -50,19 +56,24 @@ def main():
                 else:
                     raise RuntimeError("Test app readiness timed out.")
                 responses = []
-                values = ["10", "invalid-record", "20"] if args.pilot else ["10", "invalid-record", "20", "another-invalid-record", "30", "invalid-value"]
-                for value in values:
-                    response = client.post("/process", json={"value": value})
-                    expected = 200 if value.isdigit() else 422
+                payloads = ([{"value": "10"}, {"value": "invalid-record"}, {"value": "20"}] if args.pilot else
+                    [{"value": "10"}, {"value": "invalid-record"}, {"value": "20"}, {"value": "another-invalid-record"}, {"value": "30"}, {"value": "invalid-value"}])
+                if args.mixed_errors:
+                    payloads = [{"value": "10"}, {"value": "20"}, {"value": "30"}, {"value": "invalid-record"}, {"value": None}, {}]
+                for payload in payloads:
+                    response = client.post("/process", json=payload)
+                    expected = 200 if isinstance(payload.get("value"), str) and payload["value"].isdigit() else 422
                     if response.status_code != expected:
                         raise RuntimeError(f"Unexpected HTTP status {response.status_code}.")
                     responses.append({"http_status": response.status_code, **response.json()})
                 flushed = client.post("/flush")
                 flushed.raise_for_status()
+            event_ids = [item.get("event_id") for item in responses if item.get("event_id")]
             result = {"run_id": run_id, "started_at": started, "ended_at": datetime.now(timezone.utc).isoformat(),
                       "project": "escalation-test", "environment": "verification", "responses": responses,
-                      "expected_errors": 1 if args.pilot else 3, "expected_logs": 6 if args.pilot else 12,
-                      "pilot": args.pilot,
+                      "expected_errors": 3 if args.mixed_errors or not args.pilot else 1, "expected_logs": 12 if args.mixed_errors or not args.pilot else 6,
+                      "expected_error_types": ["ValueError", "TypeError", "KeyError"] if args.mixed_errors else (["ValueError"] if args.pilot else ["ValueError"] * 3),
+                      "event_ids": event_ids, "pilot": args.pilot, "mixed_errors": args.mixed_errors,
                       "transport": flushed.json(),
                       "delivery": "SDK flushed; confirm arrival independently in Sentry"}
             (directory / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")

@@ -7,17 +7,19 @@ import Home, { DataUse } from './home'
 import { Brand, EmptyState, ErrorState, LoadingState } from './components/common'
 import { useLoadingMotion } from './components/loading'
 import { useRoute, useAppNavigation, navigate, navigateHref, emailDestination, currentRouteHref, navigationEvent, type SessionStatus } from './routes'
+import { broadcastAuthenticationChange, clearDataCache, setDataCacheScope, subscribeAuthenticationChanges } from './data-cache'
+import { preloadSessionRoutes, routeModules } from './route-preload'
 
-const Dashboard = lazy(() => import('./dashboard').then(module => ({ default: module.Dashboard })))
-const Errors = lazy(() => import('./dashboard').then(module => ({ default: module.Errors })))
-const Collections = lazy(() => import('./workspace').then(module => ({ default: module.Collections })))
-const CollectionWorkspace = lazy(() => import('./workspace').then(module => ({ default: module.CollectionWorkspace })))
-const Investigations = lazy(() => import('./workspace').then(module => ({ default: module.Investigations })))
-const ConnectionsWorkspace = lazy(() => import('./connections').then(module => ({ default: module.ConnectionsWorkspace })))
-const ImportWorkspace = lazy(() => import('./imports').then(module => ({ default: module.ImportWorkspace })))
-const DemoWorkspace = lazy(() => import('./scenarios').then(module => ({ default: module.DemoWorkspace })))
-const LogsWorkspace = lazy(() => import('./logs'))
-const IncidentsWorkspace = lazy(() => import('./incidents').then(module => ({ default: module.IncidentsWorkspace })))
+const Dashboard = lazy(() => routeModules.dashboard().then(module => ({ default: module.Dashboard })))
+const Errors = lazy(() => routeModules.errors().then(module => ({ default: module.Errors })))
+const Collections = lazy(() => routeModules.collections().then(module => ({ default: module.Collections })))
+const CollectionWorkspace = lazy(() => routeModules.collections().then(module => ({ default: module.CollectionWorkspace })))
+const Investigations = lazy(() => routeModules.investigations().then(module => ({ default: module.Investigations })))
+const ConnectionsWorkspace = lazy(() => routeModules.connections().then(module => ({ default: module.ConnectionsWorkspace })))
+const ImportWorkspace = lazy(() => routeModules.import().then(module => ({ default: module.ImportWorkspace })))
+const DemoWorkspace = lazy(() => routeModules.demo().then(module => ({ default: module.DemoWorkspace })))
+const LogsWorkspace = lazy(() => routeModules.logs())
+const IncidentsWorkspace = lazy(() => routeModules.incidents().then(module => ({ default: module.IncidentsWorkspace })))
 export { ReportView } from './assessments'
 
 function clearDestination() { try { sessionStorage.removeItem('tracedesk:return-to') } catch { /* Storage can be disabled by the browser. */ } }
@@ -37,8 +39,10 @@ export default function App() {
 
   const acceptSession = useCallback((value: Session, explicit = true) => {
     const destination = value.user.read_only ? '' : pendingDestination() || emailDestination(currentRouteHref())
+    setDataCacheScope({ account: value.user.id, permission: `${value.user.role}:${value.user.read_only ? 'read-only' : value.user.email_verified ? 'verified' : 'unverified'}` })
     epoch.current++; setCsrf(value.csrf); setUser(value.user); setError(''); setSessionStatus('authenticated')
     if (value.user.email_verified || value.user.read_only) clearDestination()
+    if (explicit) broadcastAuthenticationChange()
     if (explicit) navigateHref(destination || '/dashboard', true)
   }, [])
   const refreshSession = useCallback(async () => {
@@ -54,17 +58,19 @@ export default function App() {
   const expireSession = useCallback(() => {
     const destination = emailDestination(currentRouteHref())
     if (destination) try { sessionStorage.setItem('tracedesk:return-to', destination) } catch { /* Optional browser storage. */ }
+    clearDataCache(); broadcastAuthenticationChange()
     epoch.current++; setUser(null); setCsrf(''); setSessionStatus('anonymous'); setError('Your session expired. Sign in to open your dashboard.')
   }, [])
   const retrySession = useCallback(async () => {
     const revision = ++epoch.current
     setSessionStatus('pending'); setError('')
     try {
+      void preloadSessionRoutes().catch(() => {})
       const value = await api<Session>('/auth/me')
       if (revision === epoch.current) acceptSession(value, false)
     } catch (e) {
       if (revision !== epoch.current) return
-      setUser(null); setCsrf('')
+      clearDataCache(); setUser(null); setCsrf('')
       const anonymous = e instanceof ApiError && e.status === 401
       setSessionStatus(anonymous ? 'anonymous' : 'error')
       if (!anonymous) setError(userMessage(e))
@@ -73,7 +79,8 @@ export default function App() {
   useEffect(() => {
     void retrySession()
     window.addEventListener('tracedesk:session-expired', expireSession)
-    return () => { epoch.current++; window.removeEventListener('tracedesk:session-expired', expireSession) }
+    const unsubscribe = subscribeAuthenticationChanges(() => { clearDataCache(); void retrySession() })
+    return () => { epoch.current++; unsubscribe(); window.removeEventListener('tracedesk:session-expired', expireSession) }
   }, [retrySession, expireSession])
   useEffect(() => {
     function consume() {
@@ -118,11 +125,11 @@ export default function App() {
     return () => { document.body.style.overflow = overflow; previous?.focus() }
   }, [mobileNav])
   async function logout() {
-    try { await api('/auth/logout', {}); epoch.current++; setUser(null); setCsrf(''); setSessionStatus('anonymous'); clearDestination(); navigate('login'); setError('') }
+    try { await api('/auth/logout', {}); clearDataCache(); broadcastAuthenticationChange(); epoch.current++; setUser(null); setCsrf(''); setSessionStatus('anonymous'); clearDestination(); navigate('login'); setError('') }
     catch (e) { if (e instanceof ApiError && e.status === 401) { expireSession(); navigate('login') } else setError(userMessage(e)) }
   }
   const exitAccount = () => { setAuthLink(null); setInvalidAuthLink(false); navigate('login') }
-  if (authLink || invalidAuthLink) return <AccountPage key={`${authLink?.purpose || 'invalid'}:${authLink?.token || ''}:${authLinkRevision}`} link={authLink || undefined} invalid={invalidAuthLink} onExit={exitAccount} onReset={() => { epoch.current++; setUser(null); setCsrf(''); setSessionStatus('anonymous') }} onVerified={() => {
+  if (authLink || invalidAuthLink) return <AccountPage key={`${authLink?.purpose || 'invalid'}:${authLink?.token || ''}:${authLinkRevision}`} link={authLink || undefined} invalid={invalidAuthLink} onExit={exitAccount} onReset={() => { clearDataCache(); broadcastAuthenticationChange(); epoch.current++; setUser(null); setCsrf(''); setSessionStatus('anonymous') }} onVerified={() => {
     void api<Session>('/auth/me').then(value => acceptSession(value)).catch(() => { epoch.current++; setUser(null); setCsrf(''); setSessionStatus('anonymous'); navigate('login') }).finally(() => setAuthLink(null))
   }} />
   if (route.page === 'privacy') return <div className="public-detail"><Brand /><DataUse /><a className="text-link" href={user ? '/dashboard' : '/'}>Return to {user ? 'workspace' : 'TraceDesk'}</a></div>

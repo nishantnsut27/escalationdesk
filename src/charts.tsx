@@ -10,6 +10,21 @@ const chartConfig: ChartConfig = {
   trace: { label: 'Trace', color: 'var(--chart-trace)' }, debug: { label: 'Debug', color: 'var(--chart-debug)' }, info: { label: 'Info', color: 'var(--chart-info)' },
   warning: { label: 'Warning', color: 'var(--chart-warning)' }, error: { label: 'Error', color: 'var(--chart-error)' }, unknown: { label: 'Unknown', color: 'var(--chart-unknown)' },
 }
+function compactStamp(value: string) {
+  const date = sourceDate(value)
+  return date?.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) || 'Timestamp unavailable'
+}
+function bucketDuration(bucket: HistogramBucket) {
+  const start = sourceDate(bucket.start)?.getTime(), end = sourceDate(bucket.end)?.getTime()
+  if (start == null || end == null || end < start) return 'Duration unavailable'
+  const milliseconds = end - start + 1
+  if (milliseconds < 1000) return `${milliseconds.toLocaleString()} ms`
+  const seconds = milliseconds / 1000
+  if (seconds < 60) return `${seconds.toLocaleString(undefined, { maximumFractionDigits: 2 })} sec`
+  const minutes = seconds / 60
+  if (minutes < 60) return `${minutes.toLocaleString(undefined, { maximumFractionDigits: 2 })} min`
+  return `${(minutes / 60).toLocaleString(undefined, { maximumFractionDigits: 2 })} hr`
+}
 export function Histogram({ data, onBucket, label = 'Log volume by severity' }: { data: HistogramData; onBucket?: (bucket: HistogramBucket) => void; label?: string }) {
   const id = useId().replaceAll(':', '')
   const [selectedStart, setSelectedStart] = useState('')
@@ -39,9 +54,9 @@ export function Histogram({ data, onBucket, label = 'Log volume by severity' }: 
         <Tooltip cursor={{ fill: 'var(--chart-hover)' }} content={({ active, payload }) => {
           const bucket = payload?.[0]?.payload as HistogramBucket | undefined
           if (!active || !bucket) return null
-          return <div className="chart-tooltip"><strong>{sourceDate(bucket.start)?.toLocaleDateString()}</strong><span>{sourceTime(bucket.start)} – {sourceTime(bucket.end)}</span>
-            {present.map(key => <div key={key}><span><i className="chart-swatch" data-severity={key} style={{ color: chartConfig[key].color, backgroundColor: ['info', 'error'].includes(key) ? chartConfig[key].color : 'var(--background)' }} />{chartConfig[key].label}</span><b>{Number(bucket[key as keyof HistogramBucket]).toLocaleString()}</b></div>)}
-            <footer><span>Total observations</span><b>{bucket.count.toLocaleString()}</b></footer>
+          return <div className="chart-tooltip"><strong>{compactStamp(bucket.start)}</strong><span>Bucket duration: {bucketDuration(bucket)}</span>
+            <div><span><i className="chart-swatch" data-severity="error" style={{ color: chartConfig.error.color, backgroundColor: chartConfig.error.color }} />Error-level logs</span><b>{bucket.error.toLocaleString()}</b></div>
+            <footer><span>Total logs in this bucket</span><b>{bucket.count.toLocaleString()}</b></footer>
           </div>
         }} />
         {onBucket && selectedStart && selected && <ReferenceLine x={selected.start} stroke="var(--primary)" strokeDasharray="3 3" />}

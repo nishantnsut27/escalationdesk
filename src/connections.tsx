@@ -87,13 +87,14 @@ export function ConnectionsWorkspace() {
   const [notice, setNotice] = useState('')
   const [loadError, setLoadError] = useState('')
   const mounted = useRef(false)
+  const dataRef = useRef<SentryWorkspace | null>(null)
   const refreshInFlight = useRef<Promise<void> | null>(null)
   const refresh = useCallback(() => {
     if (refreshInFlight.current) return refreshInFlight.current
     const request = api<unknown>('/connections/sentry').then(value => {
       if (!isSentryWorkspace(value)) throw new Error('Sentry connections could not be loaded. Try again.')
       if (mounted.current) {
-        setData(value); setLoadError('')
+        dataRef.current = value; setData(value); setLoadError('')
         setSelected(id => value.connections.some(connection => connection.id === id) ? id : value.connections[0]?.id || '')
       }
     }).finally(() => { refreshInFlight.current = null })
@@ -106,7 +107,8 @@ export function ConnectionsWorkspace() {
   }, [])
   useEffect(() => {
     mounted.current = true
-    const stop = poll(() => refresh().catch(e => { if (mounted.current) setLoadError(e instanceof Error ? e.message : 'Sentry connections could not be loaded. Try again.') }), 4000)
+    const stop = poll(() => refresh().catch(e => { if (mounted.current) setLoadError(e instanceof Error ? e.message : 'Sentry connections could not be loaded. Try again.') }),
+      () => dataRef.current?.imports.some(item => active.includes(item.state)) ? 4000 : 30000)
     return () => { mounted.current = false; stop() }
   }, [refresh])
   async function retryConnections() {

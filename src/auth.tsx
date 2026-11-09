@@ -7,6 +7,7 @@ import { Button } from './components/ui/button'
 import { AuthArtwork } from './components/brand-effects'
 import { navigate } from './routes'
 import { AuthEmailField, AuthNameField } from './components/auth-field'
+import { preloadSessionRoutes } from './route-preload'
 
 type AuthProps = { mode?: string; onSession: (session: Session) => void }
 
@@ -28,7 +29,11 @@ function AuthForm({ mode = 'login', onSession }: AuthProps) {
   useEffect(() => { if (!demo) return; let alive = true; api<{ demo_available: boolean; demo_case_count: number }>('/health').then(value => { if (alive) setDemoState(value) }).catch(e => { if (alive) setError(userMessage(e)) }); return () => { alive = false } }, [demo])
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError('')
-    try { onSession(await api<Session>(demo ? '/auth/demo-login' : signup ? '/auth/signup' : '/auth/login', demo ? { password: 'Demo@login' } : Object.fromEntries(new FormData(event.currentTarget)))) }
+    try {
+      void preloadSessionRoutes().catch(() => {})
+      const session = await api<Session>(demo ? '/auth/demo-login' : signup ? '/auth/signup' : '/auth/login', demo ? { password: 'Demo@login' } : Object.fromEntries(new FormData(event.currentTarget)))
+      onSession(session)
+    }
     catch (e) { setError(userMessage(e)) } finally { setBusy(false) }
   }
   return <section className="auth-form-side"><a className="back-link" href="/"><ArrowLeft size={14} />Back to TraceDesk</a><div className="auth-form-wrap"><span className="eyebrow">{demo ? 'RECORDED DEMO' : signup ? 'YOUR WORKSPACE' : 'WELCOME BACK'}</span><h1>{demo ? 'Explore a real recording.' : signup ? 'Create your account.' : 'Sign in to TraceDesk.'}</h1><p>{demo ? 'Follow saved investigations and inspect their sources.' : signup ? 'Bring your evidence. Start an investigation when you are ready.' : 'Pick up where your investigation left off.'}</p><div className="auth-tabs"><a href="/login" aria-current={!signup && !demo ? 'page' : undefined}>Sign in</a><a href="/signup" aria-current={signup ? 'page' : undefined}>Create account</a><a href="/demo-login" aria-current={demo ? 'page' : undefined}>Demo</a></div>

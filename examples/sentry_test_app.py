@@ -25,7 +25,7 @@ class VerificationTransport(HttpTransport):
         self.dropped.append(reason)
 
 
-def create_app(run_id, new_issue=False):
+def create_app(run_id, new_issue=False, mixed_errors=False):
     dsn = os.getenv("SENTRY_TEST_DSN", "").strip()
     if not dsn:
         raise RuntimeError("Set SENTRY_TEST_DSN for the dedicated escalation-test project.")
@@ -33,6 +33,10 @@ def create_app(run_id, new_issue=False):
         cleaned = scrub_event(event, hint)
         if cleaned and new_issue:
             cleaned['fingerprint'] = ['tracedesk-phase12-pilot', run_id]
+        elif cleaned and mixed_errors:
+            values = cleaned.get('exception', {}).get('values', [])
+            error_type = values[-1].get('type', 'UnknownError') if values else 'UnknownError'
+            cleaned['fingerprint'] = ['tracedesk-mixed-error', run_id, error_type]
         return cleaned
 
     sentry_sdk.init(
@@ -82,5 +86,6 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--new-issue", action="store_true", help="Give this dedicated pilot a stable issue fingerprint.")
+    parser.add_argument("--mixed-errors", action="store_true", help="Fingerprint ValueError, TypeError and KeyError separately for one bounded verification run.")
     args = parser.parse_args()
-    uvicorn.run(create_app(args.run_id, args.new_issue), host="127.0.0.1", port=args.port, access_log=False, log_level="warning")
+    uvicorn.run(create_app(args.run_id, args.new_issue, args.mixed_errors), host="127.0.0.1", port=args.port, access_log=False, log_level="warning")
