@@ -27,6 +27,10 @@ from .sentry_imports import ImportWorker
 from . import account_email, email_service
 from . import workspace_api
 from . import automation
+from . import observability_api
+from . import datadog_api
+from . import datadog_automation
+from .datadog_client import DatadogClient
 
 def owned(request, table, record_id):
     user = auth.current(request)
@@ -41,7 +45,7 @@ def owned(request, table, record_id):
     return row
 
 def serialize_investigation(row):
-    return {**{key: value for key, value in row.items() if key != "user_id"},
+    return {**{key: value for key, value in row.items() if key not in {"user_id", "execution_manifest", "execution_state"}},
             "report": json.loads(row["report"]) if row["report"] else None,
             "activity": json.loads(row["activity"]), "usage": json.loads(row["usage"]),
             "supplied_excerpts": json.loads(row["supplied_excerpts"]) if row.get("supplied_excerpts") else None,
@@ -62,11 +66,16 @@ def active_jobs(conn, owner):
 
 def investigation_options(data):
     engine = data.get("engine", "rules")
-    if set(data) - {"engine", "triage"} or engine not in {"rules", "groq"}:
+    if set(data) - {"engine", "triage", "workflow_version", "selection_version"} or engine not in {"rules", "groq"}:
         raise HTTPException(400, "Choose evidence rules or Groq.")
     if "triage" in data and (type(data["triage"]) is not bool or engine != "groq"):
         raise HTTPException(400, "Triage must be a boolean and requires Groq.")
     usage = {"triage": {"requested": True, "state": "pending"}} if data.get("triage") else {}
+    version = data.get('workflow_version', config.INVESTIGATION_VERSION)
+    selection = data.get('selection_version', 'failure-blocks-v1')
+    if version not in {'v1', 'v2'} or selection not in {'failure-blocks-v1', 'failure-blocks-v2'}:
+        raise HTTPException(400, 'Unknown investigation or selection version.')
+    usage.update(workflow_version=version, selection_version=selection)
     return engine, json.dumps(usage)
 
 
@@ -315,6 +324,8 @@ async def lifespan(app):
         app.state.investigator.start()
         app.state.sentry = SentryClient(sentry_http)
         app.state.sentry_importer = ImportWorker(app.state.sentry)
+        app.state.datadog = DatadogClient(sentry_http)
+        app.state.sentry_importer.datadog = app.state.datadog
         app.state.sentry_importer.start()
         app.state.email_worker = email_service.EmailWorker(email_http)
         app.state.email_worker.start()
@@ -370,6 +381,7 @@ def create_app():
         return JSONResponse({"error": "Storage is temporarily unavailable. Please try again shortly."},
                             status_code=503, headers={"Retry-After": "5", "Cache-Control": "no-store"})
 
+    routes = observability_api.routes + datadog_api.routes + datadog_automation.routes + routes
     app = Starlette(routes=routes, lifespan=lifespan, exception_handlers={HTTPException: error_response,
         OperationalError: storage_unavailable, PoolTimeout: storage_unavailable, TooManyRequests: storage_unavailable})
 

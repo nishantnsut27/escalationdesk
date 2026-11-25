@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 import time
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
@@ -16,10 +17,10 @@ DATASETS = ("errors", "logs", "spans")
 MAX_RECORDS = 5000
 MAX_BYTES = 10 * 1024 * 1024
 IMPORT_SECONDS = 300
-NORMALIZATION_VERSION = 3
+NORMALIZATION_VERSION = 4
 FIELDS = {
-    "logs": ["id", "timestamp", "message", "severity", "trace", "span_id", "service.name", "http.status_code"],
-    "spans": ["id", "timestamp", "trace", "span_id", "parent_span", "span.description", "span.op", "span.duration", "span.status", "service.name", "http.status_code"],
+    "logs": ["id", "timestamp", "message", "severity", "trace", "span_id", "service.name", "http.status_code", "environment"],
+    "spans": ["id", "timestamp", "trace", "span_id", "parent_span", "span.description", "span.op", "span.duration", "span.status", "service.name", "http.status_code", "environment", "release"],
 }
 
 
@@ -120,6 +121,18 @@ def normalize(source, dataset, project, connection):
     row.update(original=original, source_format="sentry", source_dataset=dataset,
         source_id=str(source_id), source_project_id=project["id"], source_project=project["slug"],
         source_organization=connection["organization"], source_connection_id=connection["id"], source_truncated=False)
+    row['source_provider'] = 'sentry'
+    for target, value in (('environment', cleaned.get('environment') or tags.get('environment') or tags.get('env')),
+                          ('release', cleaned.get('release') or tags.get('release'))):
+        if isinstance(value, str) and 1 <= len(value) <= 120:
+            row[target] = value
+    if row.get('trace_id') and re.fullmatch(r'[0-9a-fA-F]{32}', row['trace_id']):
+        row['trace_id_format'] = 'hex128'
+    if row.get('span_id') and re.fullmatch(r'[0-9a-fA-F]{16}', row['span_id']):
+        row['span_id_format'] = 'hex64'
+    propagated = cleaned.get('w3c.trace_id') or tags.get('w3c.trace_id')
+    if isinstance(propagated, str) and re.fullmatch(r'[0-9a-fA-F]{32}', propagated) and int(propagated, 16):
+        row['propagation_trace_id'] = propagated.lower()
     return row, changes + summary["redactions"], False
 
 
@@ -152,7 +165,8 @@ def public_import(row):
 
 
 def create_import(owner, connection, options, retry_of=None, *, transaction=None, scope_key=None):
-    identity = [connection["id"], options, NORMALIZATION_VERSION]
+    provider = connection.get('provider', 'sentry')
+    identity = [connection["id"], options, NORMALIZATION_VERSION if provider == 'sentry' else 'datadog-v1']
     if scope_key is not None:
         identity.append(scope_key)
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
@@ -164,21 +178,21 @@ def create_import(owner, connection, options, retry_of=None, *, transaction=None
                 return dict(existing), False
         current = conn.execute("SELECT state FROM sentry_connections WHERE id=%s AND user_id=%s", (connection["id"], owner)).fetchone()
         if not current or current["state"] != "connected":
-            raise HTTPException(409, "Reconnect Sentry before importing.")
+            raise HTTPException(409, "Reconnect the provider before importing.")
         if conn.execute("SELECT id FROM sentry_imports WHERE user_id=%s AND state IN ('queued','running','rate_limited')", (owner,)).fetchone():
-            raise HTTPException(409, "You already have an active Sentry import.")
+            raise HTTPException(409, "You already have an active evidence import.")
         if conn.execute("SELECT COUNT(*) FROM sentry_imports WHERE state IN ('queued','running','rate_limited')").fetchone()[0] >= 20:
             raise HTTPException(429, "The import queue is full. Try again shortly.")
         job, collection, stamp = db.uid(), db.uid(), db.now()
         summary = dict(observations=0, input_bytes=0, input_lines=0, duplicates=0, conflicting_ids=0,
             malformed_records=0, redactions=0, missing_timestamps=0, missing_services=0, invalid_fields=0,
-            services=[], kinds=[], coverage="Sentry import queued; evidence is not final.",
+            services=[], kinds=[], coverage="Provider import queued; evidence is not final.",
             redaction_note="Credential patterns, request containers and local variables are removed. Review evidence before analysis.",
-            source={"provider": "sentry", "organization": connection["organization"], "connection_id": connection["id"],
+            source={"provider": provider, "organization": connection["organization"], "connection_id": connection["id"],
                     "region": connection["region"], "projects": options["projects"], "start": options["start"], "end": options["end"]},
-            normalization_version=NORMALIZATION_VERSION, datasets={}, truncated_records=0, out_of_window=0)
+            normalization_version=NORMALIZATION_VERSION if provider == 'sentry' else 'datadog-v1', datasets={}, truncated_records=0, out_of_window=0)
         conn.execute("INSERT INTO collections VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)", (collection, owner, options["title"], options["symptom"],
-            None, "sentry", stamp, "sentry:" + job, json.dumps(summary)))
+            None, provider, stamp, provider + ":" + job, json.dumps(summary)))
         conn.execute("INSERT INTO sentry_imports(id,user_id,connection_id,collection_id,fingerprint,parameters,state,created_at,retry_of) VALUES(%s,%s,%s,%s,%s,%s,'queued',%s,%s)",
                      (job, owner, connection["id"], collection, fingerprint, json.dumps(options), stamp, retry_of))
         return dict(conn.execute("SELECT * FROM sentry_imports WHERE id=%s", (job,)).fetchone()), True
@@ -224,6 +238,15 @@ class ImportWorker:
         connection = db.one("SELECT state FROM sentry_connections WHERE id=%s", (job["connection_id"],))
         if not row or row["state"] not in ACTIVE or not connection or connection["state"] != "connected":
             raise SentryError("Import cancelled or connection no longer available.")
+        with db.connection() as conn:
+            automatic = conn.execute('SELECT i.*,a.state AS attempt_state FROM automatic_incidents i '
+                'JOIN automatic_attempts a ON a.incident_id=i.id WHERE a.import_id=%s OR EXISTS '
+                '(SELECT 1 FROM automatic_attempt_imports h WHERE h.attempt_id=a.id AND h.import_id=%s) LIMIT 1', (job['id'], job['id'])).fetchone()
+            if automatic:
+                from .automation import eligible
+                origin = conn.execute('SELECT * FROM sentry_connections WHERE id=%s AND user_id=%s', (automatic['connection_id'], job['user_id'])).fetchone()
+                if not origin or automatic['attempt_state'] not in {'queued', 'importing', 'waiting', 'deferred'} or not eligible(conn, origin, automatic.get('resource_id') or automatic['project_id']):
+                    raise SentryError('Automatic evidence collection is no longer enabled.')
 
     def progress(self, job, summary, state="running", extra=None):
         with db.connection() as conn:
@@ -254,12 +277,19 @@ class ImportWorker:
     def save(self, job, connection, project, dataset, records, summary):
         options = json.loads(job["parameters"])
         with db.connection() as conn:
+            db.lock(conn)
             current = conn.execute("SELECT state FROM sentry_imports WHERE id=%s", (job["id"],)).fetchone()
             if current["state"] not in ACTIVE:
                 raise SentryError("Import cancelled.")
+            active_connection = conn.execute('SELECT state,generation FROM sentry_connections WHERE id=%s AND user_id=%s', (connection['id'], job['user_id'])).fetchone()
+            if not active_connection or active_connection['state'] != 'connected' or active_connection['generation'] != connection['generation']:
+                raise SentryError('Connection changed before evidence could be retained.')
             for source in records:
                 try:
-                    row, changes, truncated = normalize(source, dataset, project, connection)
+                    normalizer = normalize
+                    if connection.get('provider') == 'datadog':
+                        from .datadog_imports import normalize as normalizer
+                    row, changes, truncated = normalizer(source, dataset, project, connection)
                     if dataset == 'errors' and options.get('issue_id'):
                         returned_issue = source.get('groupID', source.get('issue_id'))
                         if returned_issue is not None and str(returned_issue) != options['issue_id']:
@@ -268,20 +298,28 @@ class ImportWorker:
                 except (ValueError, TypeError, AttributeError, HTTPException, RecursionError):
                     summary["malformed_records"] += 1
                     continue
-                if row["timestamp"] and not datetime.fromisoformat(options["start"]) <= datetime.fromisoformat(row["timestamp"]) <= datetime.fromisoformat(options["end"]):
+                if row.get('timestamp_role') != 'retrieved_configuration' and row["timestamp"] and not datetime.fromisoformat(options["start"]) <= datetime.fromisoformat(row["timestamp"]) <= datetime.fromisoformat(options["end"]):
                     summary["out_of_window"] += 1
                     continue
                 payload = {k: v for k, v in row.items() if k not in {"id", "kind", "service", "timestamp"}}
                 encoded = json.dumps(payload)
-                digest = hashlib.sha256(encoded.encode()).hexdigest()
+                stable = {k: v for k, v in payload.items() if k != 'ingested_at'}
+                digest = hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()
                 key = f'{project["id"]}:{dataset}:{row["source_id"]}'
                 if conn.execute("SELECT 1 FROM sentry_source_keys WHERE collection_id=%s AND source_key=%s AND content_digest=%s", (job["collection_id"], key, digest)).fetchone():
                     summary["duplicates"] += 1
                     continue
-                if summary["observations"] >= MAX_RECORDS or summary["input_bytes"] + len(encoded.encode()) > MAX_BYTES:
+                if options.get('_source_service') and row['service'] != options['_source_service']:
+                    summary['out_of_scope'] = summary.get('out_of_scope', 0) + 1
+                    continue
+                if options.get('_source_environment') and row.get('environment') != options['_source_environment']:
+                    summary['out_of_scope'] = summary.get('out_of_scope', 0) + 1
+                    continue
+                if summary["observations"] >= options.get('_max_records', MAX_RECORDS) or summary["input_bytes"] + len(encoded.encode()) > options.get('_max_bytes', MAX_BYTES):
                     summary["limit_reached"] = True
                     break
-                if row["service"] not in summary["services"] and len(summary["services"]) >= 32:
+                known_services = set(summary['services']) | set(options.get('_existing_services', []))
+                if row["service"] not in known_services and len(known_services) >= 32:
                     summary["limit_reached"] = True
                     break
                 if conn.execute("SELECT 1 FROM sentry_source_keys WHERE collection_id=%s AND source_key=%s", (job["collection_id"], key)).fetchone():
@@ -313,6 +351,10 @@ class ImportWorker:
                     conn.execute("UPDATE collections SET summary=%s WHERE id=%s", (json.dumps(summary), job["collection_id"]))
 
     async def _run(self, job):
+        connection = db.one('SELECT * FROM sentry_connections WHERE id=%s', (job['connection_id'],))
+        if connection and connection.get('provider') == 'datadog':
+            from .provider_imports import run_datadog
+            return await run_datadog(self, job)
         summary = json.loads(db.one("SELECT summary FROM collections WHERE id=%s", (job["collection_id"],))["summary"])
         error, final = None, "completed"
         try:
@@ -336,13 +378,13 @@ class ImportWorker:
                        for p in options["projects"] for d in options["datasets"]]
             for stream in streams:
                 summary["datasets"][stream["project"]["slug"] + ":" + stream["dataset"]] = {"state": "pending", "received": 0}
-            deadline = time.monotonic() + 300
+            deadline = time.monotonic() + min(300, max(0, options.get('_deadline', time.time()+300)-time.time()))
             requests = 0
             while streams and not summary.get("limit_reached"):
                 stream = streams.pop(0)
                 key = stream["project"]["slug"] + ":" + stream["dataset"]
                 coverage = summary["datasets"][key]
-                if requests >= 150:
+                if requests >= options.get('_max_pages', 150) or time.monotonic() >= deadline:
                     summary["limit_reached"] = True
                     break
                 path, params = query_spec(connection, stream["project"], stream["dataset"], options, stream["cursor"])

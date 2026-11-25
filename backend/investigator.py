@@ -299,6 +299,8 @@ class Investigator:
         activity = []
         started = time.perf_counter()
         usage = json.loads(investigation["usage"])
+        if usage.get('workflow_version') == 'v2':
+            usage['execution_id'] = investigation_id
         tools.trigger_observation_id = usage.get('trigger_observation_id')
         db.execute("UPDATE investigations SET state='running' WHERE id=%s", (investigation_id,))
 
@@ -346,6 +348,9 @@ class Investigator:
     async def groq(self, tools, record, usage=None, progress=lambda state: None, *, replay_queries=None, snapshot_only=False, persist_report=None):
         if not GROQ_KEY:
             raise ValueError("Groq is not configured. Add GROQ_API_KEY to .env and restart.")
+        if usage and usage.get('workflow_version') == 'v2':
+            from .investigator_v2 import run
+            return await run(self, tools, record, usage, progress, persist_report=persist_report)
         if usage is None:
             usage = {}
         usage.update(requests=0, total_tokens=0, model=MODEL, label="Live Groq", diagnostics=[],
@@ -599,7 +604,7 @@ class Investigator:
             db.execute("UPDATE supplements SET state='failed',stage='failed', error=%s, completed_at=%s, usage=%s WHERE id=%s",
                        (message[:300], db.now(), json.dumps(usage), supplement_id))
 
-    async def provider_request(self, build, usage, progress, deadline, maximum, phase, on_supplied):
+    async def provider_request(self, build, usage, progress, deadline, maximum, phase, on_supplied, *, journal=None):
         budget = INPUT_BYTES
         for attempt in range(2):
             payload, supplied = build(budget)
@@ -634,6 +639,8 @@ class Investigator:
             progress("running")
             started = self.quota.clock()
             response = None
+            if journal:
+                journal.event('request_started', {'attempt': usage['requests'], 'phase': phase, 'body': payload})
             try:
                 response = await self.client.post("https://api.groq.com/openai/v1/chat/completions",
                     headers={"Authorization": "Bearer " + GROQ_KEY, "Content-Type": "application/json"},
@@ -647,6 +654,8 @@ class Investigator:
                 diagnostic["duration_ms"] = round((self.quota.clock() - started) * 1000)
                 progress("running")
             status = response.status_code if response is not None else 0
+            if journal and status != 200:
+                journal.event('request_failed', {'attempt': usage['requests'], 'status': status, 'diagnostic': diagnostic})
             if status == 200:
                 try:
                     result = response.json()
@@ -663,8 +672,14 @@ class Investigator:
                     message = choice["message"]
                     if not isinstance(message, dict):
                         raise ValueError()
+                    if journal:
+                        journal.event('request_completed', {'attempt': usage['requests'], 'model': usage['model'],
+                            'message': message, 'usage': diagnostic['actual_usage']})
                     return message
                 except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+                    if journal:
+                        journal.event('request_invalid', {'attempt': usage['requests'], 'status': status,
+                            'error': 'Invalid or truncated provider response.'})
                     raise ValueError("Groq returned invalid or truncated output; no report was accepted.") from None
                 finally:
                     progress("running")

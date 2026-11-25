@@ -19,6 +19,12 @@ class InvestigationState(TypedDict, total=False):
     report: dict[str, Any]
     corrections: int
     validation_error: str | None
+    hypotheses: list[dict[str, Any]]
+    seen_queries: list[str]
+    query_results: list[dict[str, Any]]
+    tool_calls: int
+    stalled: int
+    stop_reason: str
 
 
 def investigation_graph(nodes):

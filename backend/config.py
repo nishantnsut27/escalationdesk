@@ -34,7 +34,9 @@ SENTRY_CLIENT_SECRET = os.getenv("SENTRY_CLIENT_SECRET", "").strip()
 SENTRY_APP_SLUG = os.getenv("SENTRY_APP_SLUG", "").strip()
 CONNECTION_KEY = os.getenv("DESK_CONNECTION_KEY", "").strip()
 ENABLE_LAB = os.getenv("DESK_ENABLE_LAB") == "1"
+ENABLE_DATADOG = os.getenv('DESK_ENABLE_DATADOG') == '1'
 MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+INVESTIGATION_VERSION = os.getenv('DESK_INVESTIGATION_VERSION', 'v1')
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_PROXY_URL = os.getenv("GROQ_PROXY_URL", "").strip()
 JEV_KEY = os.getenv("OPENROUTER_API_KEY", "")

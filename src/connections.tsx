@@ -6,11 +6,12 @@ import { Button } from './components/ui/button'
 import { SentryConnectionEmptyState } from './components/sentry-empty-state'
 import { CupLoader } from './components/ui/cup-loader'
 import { ProgressBar } from './components/ui/progress-bar'
-import { navigate } from './routes'
+import { navigate, useRoute } from './routes'
 import { poll } from './poll'
 import { FullTime } from './reports'
 import { useWritePermission } from './account'
 import { AutomationControls } from './incidents'
+import { DatadogConnections } from './datadog'
 
 const active = ['queued', 'running', 'rate_limited']
 const incomplete = ['failed', 'partial', 'interrupted', 'cancelled']
@@ -78,6 +79,18 @@ function ImportForm({ connection, disabled, onSubmit }: { connection: SentryConn
 }
 
 export function ConnectionsWorkspace() {
+  const route = useRoute()
+  const integration = route.params.get('provider') === 'datadog' ? 'datadog' : 'sentry'
+  return <div className="connections-workspace">
+    <PageHeading eyebrow="CONNECTIONS" title="Connections">Manage provider access, saved evidence imports and automatic investigations.</PageHeading>
+    <div className="integration-selector"><label htmlFor="connection-provider">Integration</label><select id="connection-provider" value={integration} onChange={e => navigate('connections', '', { provider: e.target.value })} aria-controls="integration-settings"><option value="sentry">Sentry</option><option value="datadog">Datadog</option></select></div>
+    <div id="integration-settings" role="region" aria-label={`${integration === 'sentry' ? 'Sentry' : 'Datadog'} settings`}>
+      {integration === 'sentry' ? <SentryConnections /> : <DatadogConnections />}
+    </div>
+  </div>
+}
+
+function SentryConnections() {
   const canWrite = useWritePermission()
   const [data, setData] = useState<SentryWorkspace | null>(null)
   const [selected, setSelected] = useState('')
@@ -134,7 +147,7 @@ export function ConnectionsWorkspace() {
   }
   const current = data?.connections.find(c => c.id === selected)
   const activeImport = data?.imports.some(item => active.includes(item.state))
-  return <div className="connections-workspace"><PageHeading eyebrow="CONNECTIONS" title="Connections" actions={<div className="connection-header-actions"><label>Region for new authorization<select value={region} onChange={e => setRegion(e.target.value)} disabled={busy || !data}><option value="us">United States</option><option value="eu">European Union</option></select></label><Button onClick={() => void connect()} disabled={!canWrite || busy || !data?.configured} aria-busy={busy || undefined}>{busy ? <LoaderCircle size={16} className="spin" /> : <Cable size={16} />}Connect Sentry</Button></div>}>Connect Sentry, select a time window and save the observations you need.</PageHeading>
+  return <div className="integration-provider"><div className="section-heading"><h2>Sentry</h2><span>Errors, logs and spans</span></div><div className="connection-header-actions"><label>Region for new authorization<select value={region} onChange={e => setRegion(e.target.value)} disabled={busy || !data}><option value="us">United States</option><option value="eu">European Union</option></select></label><Button onClick={() => void connect()} disabled={!canWrite || busy || !data?.configured} aria-busy={busy || undefined}>{busy ? <LoaderCircle size={16} className="spin" /> : <Cable size={16} />}Connect Sentry</Button></div>
     {error && <ErrorState error={error} />}
     {notice && <p role="status">{notice}</p>}
     {loadError && <ErrorState error={loadError} retry={() => void retryConnections()} />}

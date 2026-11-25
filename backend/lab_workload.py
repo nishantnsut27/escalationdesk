@@ -18,6 +18,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from .config import DATA, INTERNAL_KEY
 from .telemetry import Span, emit, parent
+from .lab_resources import AllocationBudget, cpu_work
 
 
 def create_workload(role, mode, port, target):
@@ -26,6 +27,7 @@ def create_workload(role, mode, port, target):
     run_id = os.environ["LAB_RUN"]
     state = {"fault": False, "requests": 0, "failures": 0, "targets": [target], "window": 0, "window_count": 0}
     store = DATA / f"jobs-{port}.sqlite3"
+    allocation = AllocationBudget()
 
     def connection():
         return sqlite3.connect(store)
@@ -70,6 +72,8 @@ def create_workload(role, mode, port, target):
         authorize(request)
         data = await request.json()
         state["fault"] = bool(data.get("fault"))
+        if not state['fault']:
+            allocation.reset()
         if "targets" in data:
             targets = data["targets"]
             if not isinstance(targets, list) or not 1 <= len(targets) <= 2 or any(type(v) is not int or not 1024 <= v <= 65535 for v in targets):
@@ -86,6 +90,8 @@ def create_workload(role, mode, port, target):
     async def metrics(request):
         authorize(request)
         data = {"requests": state["requests"], "failures": state["failures"]}
+        if mode == 'memory' and role != 'edge':
+            data.update(allocated_bytes=allocation.retained, allocation_budget_bytes=allocation.limit, instance=str(port))
         if mode == "backlog" and role != "edge":
             with connection() as conn:
                 count, oldest = conn.execute("SELECT COUNT(*), MIN(created) FROM jobs WHERE done=0").fetchone()
@@ -129,6 +135,13 @@ def create_workload(role, mode, port, target):
                                           error_type=type(exc).__name__, target_instance=str(destination))
                                 break
                         child.status = "error" if code >= 400 else "ok"
+                elif mode == 'cpu':
+                    measured = await asyncio.to_thread(cpu_work, .15 if state['fault'] else .005)
+                    span.log('info', 'Request computation measured', instance=str(port), **measured)
+                    span.attributes.update(measured)
+                elif mode == 'memory' and state['fault']:
+                    span.log('info', 'Application allocation requested', allocated_bytes=allocation.retained, allocation_budget_bytes=allocation.limit, instance=str(port))
+                    allocation.allocate()
                 elif mode == "exception" and state["fault"]:
                     item = None
                     item["price"]  # An actual request exception, recorded before Starlette returns HTTP 500.

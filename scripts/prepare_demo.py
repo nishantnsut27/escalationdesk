@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from backend import db, demo
 from backend.catalog import CATALOG, CASE_IDS
+from backend.evidence import TOOL_NAMES
 from backend.lab import LabRuntime, summary, store_rows
 from scripts.operator_control import workload, request_pause, paused
 
@@ -77,6 +78,12 @@ def query_plan(snapshot, attempts):
     return max(compatible, key=coverage)
 
 
+def replay_plan(attempt):
+    """Replay only investigator tools, never internal selection audit entries."""
+    return [{key: entry[key] for key in ("tool", "arguments")}
+            for entry in attempt["activity"] if entry.get("tool") in TOOL_NAMES]
+
+
 async def capture(case, recapture=False):
     from scripts.verify_demo_captures import verify
     directory = BASE / case
@@ -131,6 +138,24 @@ def install_preparation(snapshot):
     store_rows(collection["id"], OWNER, snapshot["evidence"])
 
 
+def preparation_investigator(base, questions=None, reuse_queries=False):
+    """Adapt the live investigator while preserving its evolving save contract."""
+    class PreparationInvestigator(base):
+        async def groq(self, tools, record, usage=None, progress=lambda state: None, *, persist_report=None):
+            question = (questions or {}).get(self.case)
+            if question:
+                if not isinstance(question, str) or len(question) > 500:
+                    raise ValueError("Operator symptom questions must be at most 500 characters.")
+                tools.collection = {**tools.collection, "symptom": question}
+                usage["operator_question"] = question
+            if reuse_queries:
+                usage["query_plan_attempt"] = self.plan_attempt
+            return await super().groq(tools, record, usage, progress,
+                replay_queries=self.plan if reuse_queries else None, persist_report=persist_report)
+
+    return PreparationInvestigator
+
+
 async def analyze(cases, live, retry, questions=None, reuse_queries=False, resume=False, pause_check=lambda: False):
     from backend.investigator import Investigator
     from backend.provider import groq_http_client, jev_http_client
@@ -146,17 +171,7 @@ async def analyze(cases, live, retry, questions=None, reuse_queries=False, resum
         conn.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(db._schema)))
     db.init()
     db.execute("INSERT INTO users VALUES(%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", (OWNER, "Operator", "operator@evaluation.invalid", "login-disabled", db.now()))
-    class PreparationInvestigator(Investigator):
-        async def groq(self, tools, record, usage=None, progress=lambda state: None):
-            question = (questions or {}).get(self.case)
-            if question:
-                if not isinstance(question, str) or len(question) > 500:
-                    raise ValueError("Operator symptom questions must be at most 500 characters.")
-                tools.collection = {**tools.collection, "symptom": question}
-                usage["operator_question"] = question
-            if reuse_queries:
-                usage["query_plan_attempt"] = self.plan_attempt
-            return await super().groq(tools, record, usage, progress, replay_queries=self.plan if reuse_queries else None)
+    PreparationInvestigator = preparation_investigator(Investigator, questions, reuse_queries)
 
     async with groq_http_client() as groq, jev_http_client() as jev:
         worker = PreparationInvestigator(groq, triage=JevTriage(jev))
@@ -176,7 +191,7 @@ async def analyze(cases, live, retry, questions=None, reuse_queries=False, resum
             if reuse_queries:
                 attempts = [read(path) for path in (directory / "attempts").glob("*.json")]
                 previous = query_plan(snapshot, attempts)
-                worker.plan = [{key: entry[key] for key in ("tool", "arguments")} for entry in previous["activity"]]
+                worker.plan = replay_plan(previous)
                 worker.plan_attempt = previous["id"]
             db.execute("INSERT INTO investigations(id,collection_id,user_id,engine,state,created_at,usage) VALUES(%s,%s,%s,%s,%s,%s,%s)",
                 (identifier, snapshot["collection"]["id"], OWNER, "groq", "queued", db.now(), json.dumps({"triage": {"requested": True, "state": "pending"}})))

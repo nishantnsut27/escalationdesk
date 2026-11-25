@@ -1,0 +1,17 @@
+{
+  "title": "Recorded workspace acceptance fixture",
+  "observations": [
+    {"id":"root","kind":"span","service":"gateway","trace_id":"trace-a","span_id":"root-span","name":"POST /checkout","duration_ms":104,"status":"error","timestamp":"2026-11-07T10:00:00Z"},
+    {"id":"catalog","kind":"span","service":"catalog","trace_id":"trace-a","span_id":"catalog-span","parent_id":"root-span","name":"GET /items","duration_ms":24,"status":"ok","timestamp":"2026-11-07T10:00:00.010Z"},
+    {"id":"billing-first","kind":"span","service":"billing","trace_id":"trace-a","span_id":"billing-a","parent_id":"root-span","name":"authorize","duration_ms":40,"status":"error","timestamp":"2026-11-07T10:00:00.020Z"},
+    {"id":"billing-second","kind":"span","service":"billing","trace_id":"trace-a","span_id":"billing-b","parent_id":"root-span","name":"authorize retry","duration_ms":31,"status":"error","timestamp":"2026-11-07T10:00:00.070Z"},
+    {"id":"orphan","kind":"span","service":"database","trace_id":"trace-a","span_id":"orphan-span","parent_id":"absent","name":"select invoice","duration_ms":12,"status":"ok","timestamp":"2026-11-07T10:00:00.080Z"},
+    {"id":"exception","kind":"log","service":"billing","trace_id":"trace-a","request_id":"request-a","span_id":"billing-a","level":"error","timestamp":"2026-11-07T10:00:00.060Z","message":"java.lang.NullPointerException: invoice is null\n at Billing.authorize(Billing.java:42)\nCaused by: java.lang.IllegalStateException: invoice not loaded","stack_trace":"java.lang.NullPointerException: invoice is null\n at Billing.authorize(Billing.java:42)\nCaused by: java.lang.IllegalStateException: invoice not loaded"},
+    {"id":"success","kind":"log","service":"billing","trace_id":"trace-b","level":"info","timestamp":"2026-11-07T10:00:02Z","http_status":200,"message":"Request completed"},
+    {"id":"memory","kind":"log","service":"worker","request_id":"request-only","level":"error","timestamp":"2026-11-07T10:01:00Z","message":"java.lang.OutOfMemoryError: Java heap space"},
+    {"id":"request-context","kind":"log","service":"worker","request_id":"request-only","level":"info","timestamp":"2026-11-07T10:00:59Z","message":"Starting batch"},
+    {"id":"unknown-time","kind":"log","service":"worker","level":"error","message":"Readiness probe failed; pod worker-2 terminated"},
+    {"id":"unknown","kind":"log","service":"billing","level":"unknown","message":"Observation without explicit failure or correlation"}
+  ],
+  "historical_report": {"assessment":"inconclusive","summary":"Historical wording remains unchanged, including its original details.","origin":"unknown","affected_services":[],"evidence_ids":["exception"],"hypotheses":[],"recommendations":["Inspect retained context."],"limitations":["Historical coverage."]}
+}

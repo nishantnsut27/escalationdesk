@@ -195,6 +195,9 @@ class JevTriage:
                     progress("running")
                     request_started = self.clock()
                     status, headers, body = 0, {}, None
+                    journal = getattr(context, 'journal', None)
+                    if journal:
+                        journal.event('triage_request_started', {'attempt': attempt+1, 'body': payload})
                     try:
                         async with self.client.stream("POST", ENDPOINT,
                                 headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json"},
@@ -214,6 +217,9 @@ class JevTriage:
                         status = 0
                     finally:
                         diagnostic["duration_ms"] = round((self.clock() - request_started) * 1000)
+                        if journal:
+                            journal.event('triage_request_finished', {'attempt': attempt+1, 'status': status,
+                                'body': body, 'diagnostic': diagnostic})
                     if status == 200:
                         returned = metadata(body)
                         diagnostic.update(returned)

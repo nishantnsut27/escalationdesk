@@ -67,8 +67,10 @@ class Filters:
 def scope_sql(owner, *, collection_id=None, run_id=None, demo=False, filters=None, include_time=True):
     clauses, args = ["e.user_id=%s"], [owner]
     if collection_id:
-        clauses.append("e.collection_id=%s")
-        args.append(collection_id)
+        from .evidence_scope import predicate
+        clause, scope_args = predicate(collection_id=collection_id)
+        clauses.append(clause)
+        args.extend(scope_args)
     if run_id:
         clauses.append("e.run_id=%s")
         args.append(run_id)
@@ -137,14 +139,15 @@ def histogram(owner, *, buckets=32, **scope):
 
 
 def recorded_flow(rows, *, scope_label):
+    from .evidence_contracts import span_key
     spans = [row for row in rows if row["kind"] == "span"]
     index = {}
     for row in spans:
         if row.get("trace_id") and row.get("span_id"):
-            index.setdefault((row["trace_id"], row["span_id"]), []).append(row)
+            index.setdefault(span_key(row), []).append(row)
     nodes, edges = [], []
     for row in spans:
-        parents = index.get((row.get("trace_id"), row.get("parent_id")), []) if row.get("parent_id") else []
+        parents = index.get(span_key(row, parent=True), []) if row.get("parent_id") else []
         parent = parents[0] if len(parents) == 1 and parents[0]["id"] != row["id"] else None
         nodes.append({"id": row["id"], "service": row["service"], "operation": row.get("name") or row.get("span_op") or "Unnamed operation",
                       "status": row.get("status", "unknown"), "duration_ms": row.get("duration_ms"), "timestamp": row.get("started_at") or row.get("timestamp"),

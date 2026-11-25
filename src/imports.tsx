@@ -68,10 +68,10 @@ export function ImportCoverage({ collection }: { collection: Collection }) {
   const summary = collection.summary
   return <section className="import-coverage" aria-label="Import coverage">
     <h3>{collection.title}</h3>
-    <p>Imported <FullTime value={collection.created_at} /> from {collection.source_type === 'sentry' ? 'Sentry / ' + collection.summary.source?.organization : collection.filename || 'pasted text'}. This is import activity, not a telemetry timestamp.</p>
+    <p>Imported <FullTime value={collection.created_at} /> from {['sentry', 'datadog'].includes(collection.source_type) ? (collection.source_type === 'sentry' ? 'Sentry' : 'Datadog') + ' / ' + collection.summary.source?.organization : collection.source_type === 'composite' ? 'combined saved snapshots' : collection.filename || 'pasted text'}. This is import activity, not a telemetry timestamp.</p>
     {summary.source && <p>Selected window: <FullTime value={summary.source.start} /> to <FullTime value={summary.source.end} />. Region: {summary.source.region.toUpperCase()}.</p>}
     {collection.source_type === 'sentry' && <p>Sentry projects identify where evidence was stored. Service names identify the application that emitted it; missing service names remain unknown.</p>}
-    {collection.source_type === 'sentry' && (summary.normalization_version ?? 1) < 2 && <p className="import-guidance" role="status">Older Sentry import: create a fresh import for corrected service names, exception handling and HTTP response metadata. This snapshot and its saved reports are unchanged.</p>}
+    {collection.source_type === 'sentry' && Number(summary.normalization_version ?? 1) < 2 && <p className="import-guidance" role="status">Older Sentry import: create a fresh import for corrected service names, exception handling and HTTP response metadata. This snapshot and its saved reports are unchanged.</p>}
     {summary.datasets && <ul className="dataset-coverage">{Object.entries(summary.datasets).map(([name, value]) => <li key={name}><strong>{name}</strong>: {value.state}{value.received !== undefined && ` / ${value.received} received`}{value.reason && ` / ${value.reason}`}</li>)}</ul>}
     {collection.symptom && <p><strong>Reported symptom:</strong> {collection.symptom}</p>}
     <dl>{[

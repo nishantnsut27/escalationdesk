@@ -1,0 +1,15 @@
+ALTER TABLE sentry_automation ADD COLUMN configuration JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE sentry_automation ADD COLUMN webhook_digest TEXT;
+ALTER TABLE automatic_incidents ALTER COLUMN issue_id DROP NOT NULL;
+ALTER TABLE automatic_incidents ALTER COLUMN project_id DROP NOT NULL;
+ALTER TABLE automatic_incidents ADD COLUMN resource_id TEXT;
+ALTER TABLE automatic_incidents ADD COLUMN resource_key TEXT;
+ALTER TABLE automatic_incidents ADD COLUMN cycle_key TEXT;
+ALTER TABLE automatic_incidents ADD COLUMN collection_plan JSONB;
+ALTER TABLE automatic_attempts ADD COLUMN scope_collection_id TEXT REFERENCES collections(id);
+CREATE UNIQUE INDEX monitor_cycle_unique ON automatic_incidents(connection_id,resource_key,cycle_key) WHERE cycle_key IS NOT NULL;
+ALTER TABLE automatic_deliveries ALTER COLUMN issue_id DROP NOT NULL;
+ALTER TABLE automatic_deliveries ALTER COLUMN project_id DROP NOT NULL;
+ALTER TABLE automatic_deliveries ADD COLUMN resource_id TEXT;
+ALTER TABLE automatic_deliveries ADD COLUMN resource_key TEXT;
+ALTER TABLE automatic_deliveries ADD COLUMN cycle_key TEXT;

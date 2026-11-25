@@ -1,0 +1,277 @@
+{
+  "version": "benchmark-v2",
+  "telemetry": "Definitions only; captures and ground truth are separate from model input.",
+  "scenarios": [
+    {
+      "id": "pool",
+      "ground_truth": "Application pool exhausted",
+      "affected_service": "payment",
+      "expected_evidence": [
+        "acquisition error",
+        "pool capacity and usage",
+        "failed request spans"
+      ],
+      "relationships": [
+        "parent_span",
+        "shared_trace"
+      ],
+      "hypotheses": [
+        "pool exhaustion",
+        "connection leak",
+        "server overload"
+      ],
+      "expected_result": "Support pool exhaustion; leave leak and server overload unproven",
+      "should_abstain": false,
+      "variants": [
+        "complete",
+        "missing_discriminating_evidence",
+        "irrelevant_or_conflicting_context"
+      ]
+    },
+    {
+      "id": "upstream",
+      "ground_truth": "Dependency processing exceeds caller deadline",
+      "affected_service": "dependency",
+      "expected_evidence": [
+        "caller deadline",
+        "matched spans",
+        "processing duration"
+      ],
+      "relationships": [
+        "parent_span",
+        "shared_trace"
+      ],
+      "hypotheses": [
+        "slow dependency",
+        "caller deadline"
+      ],
+      "expected_result": "Locate observed slowness, not its unobserved deeper reason",
+      "should_abstain": false,
+      "variants": [
+        "complete",
+        "missing_discriminating_evidence",
+        "irrelevant_or_conflicting_context"
+      ]
+    },
+    {
+      "id": "payment_timeout",
+      "ground_truth": "Order times out awaiting Payment",
+      "affected_service": "order",
+      "expected_evidence": [
+        "caller timeout",
+        "Payment outcome if available"
+      ],
+      "relationships": [
+        "shared_trace"
+      ],
+      "hypotheses": [
+        "slow Payment",
+        "transport fault",
+        "caller deadline"
+      ],
+      "expected_result": "Caller-only variant must abstain on internal origin",
+      "should_abstain": true,
+      "variants": [
+        "complete",
+        "missing_discriminating_evidence",
+        "irrelevant_or_conflicting_context"
+      ]
+    },
+    {
+      "id": "memory",
+      "ground_truth": "An explicit application allocation budget is exhausted by retained allocations",
+      "affected_service": "inventory",
+      "expected_evidence": [
+        "allocated bytes and application allocation budget",
+        "explicit allocation failure",
+        "instance identity"
+      ],
+      "relationships": [
+        "shared_instance"
+      ],
+      "hypotheses": [
+        "memory pressure",
+        "leak",
+        "process kill"
+      ],
+      "expected_result": "Identify the observed application allocation guard; do not claim host pressure, a leak or an OOM kill",
+      "should_abstain": false,
+      "variants": [
+        "complete",
+        "missing_discriminating_evidence",
+        "irrelevant_or_conflicting_context"
+      ]
+    },
+    {
+      "id": "cpu",
+      "ground_truth": "Measured CPU-bound request processing",
+      "affected_service": "inventory",
+      "expected_evidence": [
+        "process CPU time",
+        "wall time",
+        "operation spans"
+      ],
+      "relationships": [
+        "shared_instance",
+        "shared_trace"
+      ],
+      "hypotheses": [
+        "CPU-bound work",
+        "slow I/O"
+      ],
+      "expected_result": "Identify measured CPU-bound delay at the operation level",
+      "should_abstain": false,
+      "variants": [
+        "complete",
+        "missing_discriminating_evidence",
+        "irrelevant_or_conflicting_context"
+      ]
+    },
+    {
+      "id": "queue",
+      "ground_truth": "Consumer progress falls behind arrival",
+      "affected_service": "consumer",
+      "expected_evidence": [
+        "depth",
+        "arrival count",
+        "acknowledgments",
+        "heartbeat"
+      ],
+      "relationships": [
+        "shared_instance"
+      ],
+      "hypotheses": [
+        "consumer not draining",
+        "arrival burst",
+        "worker death"
+      ],
+      "expected_result": "Describe stalled consumption; heartbeat weakens worker-death claim",
+      "should_abstain": false,
+      "variants": [
+        "complete",
+        "missing_discriminating_evidence",
+        "irrelevant_or_conflicting_context"
+      ]
+    },
+    {
+      "id": "throttling",
+      "ground_truth": "Upstream rate limit enforced",
+      "affected_service": "upstream",
+      "expected_evidence": [
+        "HTTP 429",
+        "Retry-After",
+        "request identity"
+      ],
+      "relationships": [
+        "shared_trace"
+      ],
+      "hypotheses": [
+        "throttling",
+        "timeout",
+        "authentication"
+      ],
+      "expected_result": "Identify the observed rate-limit response",
+      "should_abstain": false,
+      "variants": [
+        "complete",
+        "missing_discriminating_evidence",
+        "irrelevant_or_conflicting_context"
+      ]
+    },
+    {
+      "id": "deployment",
+      "ground_truth": "New release introduces a linked failure",
+      "affected_service": "application",
+      "expected_evidence": [
+        "release and instance",
+        "runtime or schema failure",
+        "deployment event"
+      ],
+      "relationships": [
+        "deployment_association",
+        "shared_instance"
+      ],
+      "hypotheses": [
+        "release regression",
+        "unrelated dependency failure"
+      ],
+      "expected_result": "Time-only variant must abstain; linked mechanism may be supported",
+      "should_abstain": false,
+      "variants": [
+        "complete",
+        "missing_discriminating_evidence",
+        "irrelevant_or_conflicting_context"
+      ]
+    },
+    {
+      "id": "tls",
+      "ground_truth": "Certificate verification fails",
+      "affected_service": "client",
+      "expected_evidence": [
+        "TLS verification error",
+        "target",
+        "certificate details"
+      ],
+      "relationships": [
+        "shared_instance",
+        "shared_trace"
+      ],
+      "hypotheses": [
+        "expired certificate",
+        "DNS",
+        "connection refusal"
+      ],
+      "expected_result": "Identify TLS verification failure; no HTTP response invented",
+      "should_abstain": false,
+      "variants": [
+        "complete",
+        "missing_discriminating_evidence",
+        "irrelevant_or_conflicting_context"
+      ]
+    },
+    {
+      "id": "configuration",
+      "ground_truth": "Required application configuration invalid",
+      "affected_service": "application",
+      "expected_evidence": [
+        "configuration validation failure",
+        "process identity",
+        "affected operation"
+      ],
+      "relationships": [
+        "shared_instance"
+      ],
+      "hypotheses": [
+        "configuration error",
+        "dependency unavailable"
+      ],
+      "expected_result": "Unlinked startup records cannot explain an unrelated request",
+      "should_abstain": false,
+      "variants": [
+        "complete",
+        "missing_discriminating_evidence",
+        "irrelevant_or_conflicting_context"
+      ]
+    },
+    {
+      "id": "incomplete",
+      "ground_truth": "Distinguishing mechanism evidence withheld",
+      "affected_service": "unknown",
+      "expected_evidence": [
+        "caller symptoms",
+        "declared missing datasets"
+      ],
+      "relationships": [],
+      "hypotheses": [
+        "multiple unresolved mechanisms"
+      ],
+      "expected_result": "Return inconclusive and unknown origin",
+      "should_abstain": true,
+      "variants": [
+        "complete",
+        "missing_discriminating_evidence",
+        "irrelevant_or_conflicting_context"
+      ]
+    }
+  ]
+}

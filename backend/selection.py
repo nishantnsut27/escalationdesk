@@ -38,9 +38,13 @@ def repetition_shape(row):
     return json.dumps({key: value for key, value in row.items() if key not in ignored}, sort_keys=True, ensure_ascii=False)
 
 
-def select_blocks(rows, symptom="", maximum=100):
+def select_blocks(rows, symptom="", maximum=100, *, version=VERSION_SELECTION, mappings=None, strict_identity=False):
     """Select context, never infer a causal relationship from proximity."""
     rows = list(rows)
+    if version == 'failure-blocks-v2':
+        return select_blocks_v2(rows, symptom, maximum, mappings=mappings)
+    if version != VERSION_SELECTION:
+        raise ValueError('Unknown evidence selection version.')
     terms = {term.lower() for term in re.findall(r"[\w.-]{4,}", symptom) if term.lower() not in {"with", "from", "this", "that", "have", "after", "before", "when"}}
     seeds = sorted(enumerate(rows), key=lambda pair: (
         not failure(pair[1]), -sum(term in signature_text(pair[1]).lower() for term in terms),
@@ -87,6 +91,9 @@ def select_blocks(rows, symptom="", maximum=100):
         if trace or request:
             key, value = ("trace_id", trace) if trace else ("request_id", request)
             context = [row for row in rows if row.get(key) == value]
+            if strict_identity:
+                from .evidence_contracts import namespace, trace_key
+                context = [row for row in context if trace_key(row) == trace_key(anchor)] if trace else [row for row in context if namespace(row) == namespace(anchor)]
             reason = "same_" + key
         elif at is not None:
             context = [row for row in rows if row["service"] == anchor["service"] and stamp(row) is not None and abs(stamp(row) - at) <= 30]
@@ -128,9 +135,49 @@ def select_blocks(rows, symptom="", maximum=100):
         "note": "Proximity is context only, never a dependency or causal edge. Repeated IDs remain distinct observations."}
 
 
+def select_blocks_v2(rows, symptom='', maximum=100, *, mappings=None):
+    from .evidence_graph import build
+    initial, metadata = select_blocks(rows, symptom, maximum, strict_identity=True)
+    by_id = {r['id']: r for r in rows}
+    graph = build(rows, mappings=mappings)
+    neighbors = {}
+    for edge in graph['edges']:
+        if edge['relationship'] in {'parent_span', 'shared_cross_source_trace'}:
+            neighbors.setdefault(edge['source'], []).append(edge['target'])
+            neighbors.setdefault(edge['target'], []).append(edge['source'])
+    ordered = []
+    anchors = [r for r in initial if failure(r)]
+    conflicts = [r for r in initial if not failure(r) and r['kind'] in {'metric', 'log'}]
+    def add(row, reason):
+        if row['id'] not in {r['id'] for r in ordered} and len(ordered) < maximum:
+            ordered.append(row)
+            metadata['sources'].setdefault(row['id'], {'selection': [], 'occurrence_ids': [row['id']], 'occurrences': 1})
+            metadata['sources'][row['id']]['selection'].append({'reason': reason, 'anchor_id': row['id']})
+    for row in anchors[:8]:
+        add(row, 'rare_failure_anchor')
+    for row in conflicts[:8]:
+        add(row, 'reserved_measurement_or_counterevidence')
+    for row in anchors[:8]:
+        for ref in neighbors.get(row['id'], [])[:4]:
+            add(by_id[ref], 'recorded_identity_neighborhood')
+    metrics = {}
+    for row in rows:
+        if row['kind'] == 'metric' and type(row.get('value')) in (int, float):
+            key = (row['service'], row.get('metric_name'), json.dumps(row.get('dimensions', {}), sort_keys=True))
+            metrics.setdefault(key, []).append(row)
+    for samples in metrics.values():
+        for row in (samples[0], samples[-1], min(samples, key=lambda r: r['value']), max(samples, key=lambda r: r['value'])):
+            add(row, 'metric_series_extreme_or_endpoint')
+    for row in initial:
+        add(row, 'diverse_representative')
+    metadata.update(version='failure-blocks-v2', selected_observations=len(ordered),
+                    omitted_observations=len(rows)-len(ordered), relationship_version=graph['version'])
+    return ordered, metadata
+
+
 def fetch_owned(tools):
-    field, value = ("collection_id", tools.collection_id) if tools.collection_id else ("run_id", tools.run_id)
-    rows = db.all_rows(f"SELECT e.* FROM evidence e JOIN evidence_index i ON i.evidence_id=e.id WHERE e.{field}=%s AND e.user_id=%s ORDER BY i.observed_at NULLS LAST,i.source_line,e.id", (value, tools.owner))
+    from .evidence_scope import rows as scope_rows
+    rows = scope_rows(tools.owner, collection_id=tools.collection_id, run_id=tools.run_id)
     return [db.public_evidence(row) for row in rows]
 
 

@@ -12,7 +12,7 @@ export function userMessage(error: unknown, fallback = 'The request could not be
 }
 let csrf = ''
 export function setCsrf(value: string) { csrf = value }
-export async function api<T>(path: string, body?: unknown, method: 'POST' | 'PUT' = 'POST', signal?: AbortSignal): Promise<T> {
+export async function api<T>(path: string, body?: unknown, method: 'POST' | 'PUT' | 'DELETE' = 'POST', signal?: AbortSignal): Promise<T> {
   const requestSession = csrf
   const response = await fetch('/api' + path, {
     credentials: 'same-origin',
@@ -62,6 +62,7 @@ export type Investigation = {
   supplements?: Supplement[]
   collection_id?: string | null; incident_id?: string | null; stage?: string | null; supplied_excerpts?: SuppliedRequest[] | null
   usage: { model?: string; duration_ms?: number; total_tokens?: number; requests?: number
+    hypotheses?: Hypothesis[]; stop_reason?: string; workflow_version?: string
     triage?: Triage; report_format?: string
     progress?: string; retry_at?: string; wait_reason?: string; quota_wait_seconds?: number
     estimated_input_tokens?: number; supplied_evidence_ids?: string[]; coverage?: string; available_sources?: number
@@ -106,12 +107,12 @@ export type Overview = {
 
 
 export type Collection = {
-  id: string; title: string; symptom: string; filename: string | null; source_type: 'file' | 'paste' | 'live_scenario' | 'recorded_demo' | 'sentry'; created_at: string
+  id: string; title: string; symptom: string; filename: string | null; source_type: 'file' | 'paste' | 'live_scenario' | 'recorded_demo' | 'sentry' | 'datadog' | 'composite'; created_at: string
   summary: { observations: number; input_bytes: number; input_lines: number; duplicates: number; conflicting_ids: number
     malformed_records: number; redactions: number; missing_timestamps: number; missing_services: number; invalid_fields: number
     services: string[]; kinds: string[]; coverage: string; redaction_note: string
     source?: { organization: string; region: string; projects: string[]; start: string; end: string }
-    datasets?: Record<string, DatasetCoverage>; truncated_records?: number; out_of_window?: number; normalization_version?: number }
+    datasets?: Record<string, DatasetCoverage>; truncated_records?: number; out_of_window?: number; normalization_version?: number | string }
 }
 export type CollectionDetail = { collection: Collection; investigations: Investigation[]; import_state?: string | null }
 export type DatasetCoverage = { state: string; reason?: string; received?: number; pages?: number; project?: string }
@@ -134,3 +135,5 @@ export type FlowData = { mode: 'spans' | 'events' | 'unselected'; nodes: FlowNod
 export type Scenario = { id: string; title: string; description: string; category: string }
 export type DemoCase = Omit<Scenario, 'id'> & { slug: string; version: string; recorded_at: string; collection_id: string; investigation_id: string; counts: Record<'log' | 'span' | 'metric', number> }
 
+
+export type Hypothesis = { id: string; description: string; status: string; support_level: string; supporting_evidence_ids: string[]; contradicting_evidence_ids: string[]; missing_evidence: string[]; transition_reason: string }

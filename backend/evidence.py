@@ -138,10 +138,23 @@ class EvidenceTools:
 
 def model_observation(row):
     # Original redacted content remains inspectable; avoid repeating it in model input.
-    return {key: value for key, value in row.items() if key not in {
-        "original", "collection_id", "run_id", "source_format", "source_id", "source_line", "source_end_line", "source_project_id", "source_connection_id", "source_organization", "signature_version"}
+    result = {key: value for key, value in row.items() if key not in {
+        "original", "collection_id", "run_id", "source_format", "source_id", "source_line", "source_end_line", "source_project_id", "source_connection_id", "source_organization", "signature_version",
+        "provenance", "ingested_at", "normalization_version"}
         and not (row["kind"] == "span" and ((key == "message" and value == row.get("name")) or (key == "level" and value == "unknown")))
         and not (key == "source_truncated" and value is False)}
+    if row.get('source_connection_id') or row.get('collection_id') or row.get('run_id'):
+        result['correlation_namespace'] = row.get('correlation_namespace') or row.get('source_connection_id') or row.get('collection_id') or row.get('run_id')
+    return result
+
+
+def unique_spans(rows):
+    from .evidence_contracts import span_key
+    grouped = {}
+    for row in rows:
+        if row.get('kind') == 'span' and span_key(row):
+            grouped.setdefault(span_key(row), []).append(row)
+    return {key: values[0] for key, values in grouped.items() if len(values) == 1}
 
 # All source observations remain in storage. Grouping retains a real representative,
 # never manufactures a composite source ID or overwrites the original.
@@ -163,8 +176,11 @@ def representatives(rows):
     for group in groups.values():
         row = dict(group[0])
         if len(group) > 1:
+            from .selection import stamp
             row["repetitions"] = len(group)
-            row["observed_until"] = group[-1]["timestamp"]
+            timed = [(stamp(item), item) for item in group]
+            timed = [(at, item) for at, item in timed if at is not None]
+            row["observed_until"] = max(timed, key=lambda pair: pair[0])[1]['timestamp'] if timed else None
             if "duration_ms" in row:
                 row["duration_ms_range"] = [min(r["duration_ms"] for r in group), max(r["duration_ms"] for r in group)]
         result.append(row)
@@ -225,7 +241,8 @@ def compact(rows, budget, priority=(), *, preserve_priority=False):
 
 def timing_comparisons(rows):
     """Compare measured durations only when a complete parent path is supplied."""
-    spans = {(r.get("trace_id"), r.get("span_id")): r for r in rows if r["kind"] == "span"}
+    from .evidence_contracts import span_key, trace_key
+    spans = unique_spans(rows)
     comparisons = []
     for log in rows:
         if not log.get("downstream") or not isinstance(log.get("timeout_ms"), (int, float)):
@@ -233,13 +250,13 @@ def timing_comparisons(rows):
         operations = []
         for span in spans.values():
             if (span["service"] != log["downstream"] or not log.get("trace_id") or not log.get("span_id")
-                    or span.get("trace_id") != log.get("trace_id") or not isinstance(span.get("duration_ms"), (int, float))):
+                    or trace_key(span) != trace_key(log) or not isinstance(span.get("duration_ms"), (int, float))):
                 continue
             path, parent = [span["id"]], span.get("parent_id")
             visited = set()
             while parent and parent != log.get("span_id") and parent not in visited:
                 visited.add(parent)
-                ancestor = spans.get((log["trace_id"], parent))
+                ancestor = spans.get(span_key({**log, 'span_id': parent}))
                 if ancestor is None:
                     break
                 path.append(ancestor["id"])
@@ -256,7 +273,8 @@ def timing_comparisons(rows):
     return comparisons
 
 def http_exchanges(rows):
-    spans = {(r.get("trace_id"), r.get("span_id")): r for r in rows if r["kind"] == "span"}
+    from .evidence_contracts import span_key
+    spans = unique_spans(rows)
     exchanges = []
     for log in rows:
         # Legacy workload server spans carry the response in attributes. Keep
@@ -274,7 +292,7 @@ def http_exchanges(rows):
             continue
         if log["kind"] != "log":
             continue
-        span = spans.get((log["trace_id"], log["span_id"])) if log.get("trace_id") and log.get("span_id") else None
+        span = spans.get(span_key(log))
         downstream = log.get("downstream")
         if (not downstream and span and not span.get("span_op") and log["service"] != "unknown" and span.get("service") == log["service"]
                 and span.get("name", "").startswith("http.") and span["name"] not in {"http.server", "http.client"}):
@@ -351,10 +369,24 @@ class EvidenceContext:
         self.topology = None
         self.trace_sources = set()
         self.trigger_sources = set()
+        self.instance_sources = set()
+        self.downstream_sources = set()
+        self.unlinked_lifecycle_sources = set()
         self.selected_trace = None
         self.triage = None
         self.advisory_priority = []
         self.triage_included = "not_requested"
+
+    def trace_score(self, trace_id):
+        """Prefer a trace with explicit failures over a later healthy query."""
+        rows = [row for row in self.records.values() if row.get("trace_id") == trace_id]
+        diagnostic = [row for row in rows if (
+            row.get("level") == "error" or row.get("status") == "error"
+            or row.get("http_status", 0) >= 400 or row.get("exception_type")
+            or row.get("stack_trace") or row.get("error") or row.get("error_type")
+            or isinstance(row.get("timeout_ms"), (int, float))
+        )]
+        return bool(diagnostic), len(diagnostic), len(rows)
 
     def add(self, name, args, result):
         if isinstance(result, dict):
@@ -362,18 +394,66 @@ class EvidenceContext:
             if "configured_edges" in result:
                 self.topology = result
             if name == "get_trace":
-                self.selected_trace = args["trace_id"]
+                candidate = args["trace_id"]
+                if self.selected_trace is None or self.trace_score(candidate) > self.trace_score(self.selected_trace):
+                    self.selected_trace = candidate
             if self.selected_trace:
-                spans = {(r.get("trace_id"),r.get("span_id")): r for r in self.records.values() if r["kind"] == "span"}
+                from .evidence_contracts import span_key
+                spans = unique_spans(self.records.values())
                 def redundant_status(row):
-                    span = spans.get((row.get("trace_id"),row.get("span_id")),{})
+                    span = spans.get(span_key(row), {})
                     return (row["kind"] == "log" and row.get("message", "").lower() in {"request completed","checkout request completed"}
                             and row.get("http_status") is not None and row["http_status"] == span.get("attributes",{}).get("http_status"))
+                def generic_receipt(row):
+                    return row["kind"] == "log" and row.get("message", "").lower() in {
+                        "request received", "checkout request received"}
                 self.trace_sources = {r["id"] for r in self.records.values()
-                                      if r.get("trace_id") == self.selected_trace and not redundant_status(r) and (
+                                      if r.get("trace_id") == self.selected_trace and not redundant_status(r) and not generic_receipt(r) and (
                                           r["kind"] == "span" or any(key in r for key in (
                                               "http_status", "timeout_ms", "error", "error_type", "exception_type",
                                               "instance", "target_instance", "job_id")) or r.get("level") == "error")}
+            targets = {str(row["target_instance"]) for row in self.records.values()
+                       if row.get("target_instance") is not None}
+            downstreams = {row["downstream"] for row in self.records.values()
+                           if isinstance(row.get("downstream"), str) and row["downstream"]}
+            downstreams.update(row["name"][5:] for row in self.records.values()
+                               if row.get("kind") == "span" and isinstance(row.get("name"), str)
+                               and row["name"].startswith("http.")
+                               and row["name"] not in {"http.client", "http.server"})
+            self.instance_sources = set()
+            for target in targets:
+                peers = [row for row in self.records.values() if row.get("instance") is not None
+                         and str(row["instance"]) == target and (
+                             row.get("level") == "error" or row.get("ready") is False
+                             or row.get("exit_code") not in {None, 0} or row.get("not_after")
+                             or any(word in row.get("message", "").lower() for word in ("failed", "exited")))]
+                if peers:
+                    def peer_score(row):
+                        message = row.get("message", "").lower()
+                        return (row.get("level") == "error",
+                                "verification failed" in message or "startup attempt" in message,
+                                row.get("ready") is False, row.get("exit_code") not in {None, 0},
+                                row.get("timestamp", ""))
+                    self.instance_sources.add(max(peers, key=peer_score)["id"])
+            self.downstream_sources = set()
+            self.unlinked_lifecycle_sources = {row["id"] for row in self.records.values()
+                if row.get("service") in downstreams and row.get("instance") is None
+                and not row.get("trace_id") and row["id"] not in self.trigger_sources
+                and (row.get("ready") is False or row.get("exit_code") not in {None, 0})}
+            for downstream in downstreams:
+                lifecycle = [row for row in self.records.values() if row.get("service") == downstream
+                             and row.get("instance") is not None and str(row["instance"]) in targets
+                             and (row.get("ready") is False or row.get("exit_code") not in {None, 0})]
+                if lifecycle:
+                    self.downstream_sources.add(max(lifecycle, key=lambda row: row.get("timestamp", ""))["id"])
+                    continue
+                owners = [row for row in self.records.values() if row.get("service") == downstream
+                          and row.get("instance") is not None and str(row["instance"]) in targets]
+                if owners:
+                    def owner_score(row):
+                        message = row.get("message", "").lower()
+                        return (message == "service started", not row.get("trace_id"), row.get("timestamp", ""))
+                    self.downstream_sources.add(max(owners, key=owner_score)["id"])
         self.queries.append({"tool": name, "arguments": args,
                              "returned": len(result.get("records", [])) if isinstance(result, dict) else len(result),
                              "omitted_groups": result.get("omitted_groups", 0) if isinstance(result, dict) else 0,
@@ -384,21 +464,36 @@ class EvidenceContext:
         # Query arguments help select the next tool, but final reports need the
         # observations. Keep the complete query history in saved activity.
         recent = [] if "response_format" in base else self.queries[-6:]
-        priority = set(self.trace_sources) | self.trigger_sources
+        priority = set(self.trace_sources) | self.trigger_sources | self.instance_sources | self.downstream_sources
+        priority |= set(getattr(self, 'hypothesis_sources', ()))
         # Keep one independently successful HTTP observation alongside a failing
         # selected trace. It is counterevidence to blanket failure, not recovery.
         selected = [r for r in self.records.values() if r["id"] in self.trace_sources]
+        contrast_sources, failure_anchors = set(), set(self.trigger_sources)
         if any(r.get("http_status", 0) >= 400 or r.get("exception_type") for r in selected):
             success = next((r for r in self.records.values() if r.get("trace_id") and r["trace_id"] != self.selected_trace
                             and 200 <= r.get("http_status", 0) < 400), None)
             if success:
                 priority.add(success["id"])
-        evidence_budget = budget
-        while evidence_budget >= 0:
+                contrast_sources.add(success["id"])
+                anchor = next((r for r in selected if any(r.get(key) for key in (
+                    "exception_type", "stack_trace", "error_type", "error", "timeout_ms"))), None)
+                if anchor is None:
+                    anchor = next(r for r in selected if r.get("http_status", 0) >= 400)
+                failure_anchors.add(anchor["id"])
+        evidence_budget = upper = budget
+        lower, best = 0, None
+        while lower <= upper:
             # The final table encoding can be smaller than the row encoding used
             # by tools. Fit against the complete request below; never discard a
             # required relationship merely because this intermediate form grew.
-            evidence = compact(list(self.records.values()), evidence_budget, priority)
+            eligible = [row for row in self.records.values() if getattr(self, 'retain_contextual_lifecycle', False) or row["id"] not in self.unlinked_lifecycle_sources]
+            # Preserve the diagnostic anchor and a contrasting observation before
+            # additional rows from the same failing trace consume the byte budget.
+            if contrast_sources:
+                eligible.sort(key=lambda row: 0 if row["id"] in failure_anchors else
+                              1 if row["id"] in contrast_sources else 2)
+            evidence = compact(eligible, evidence_budget, priority)
             # Advisory ranking orders already selected evidence; it cannot evict
             # measured extremes or successful/conflicting observations.
             rank = {ref: index for index, ref in enumerate(self.advisory_priority)}
@@ -415,6 +510,12 @@ class EvidenceContext:
                        "measured_timing_comparisons": timing_comparisons(evidence["records"]),
                        "observed_http_exchanges": http_exchanges(evidence["records"])}
             identities = instance_relationships(evidence["records"])
+            if getattr(self, 'include_relationships', False):
+                from .evidence_graph import build
+                mappings = json.loads(self.tools.collection['summary']).get('mappings') if self.tools.collection else None
+                graph = build(evidence['records'], maximum=12, mappings=mappings)
+                context['evidence_relationships'] = {'edges': graph['edges'][:6], 'ambiguities': graph['ambiguities'][:4],
+                    'note': graph['note'], 'partial': bool(graph['omitted_edges'] or len(graph['edges']) > 6)}
             if identities:
                 context["explicit_instance_relationships"] = identities
             if self.tools.collection:
@@ -428,6 +529,13 @@ class EvidenceContext:
                                             for name, value in summary["datasets"].items()}
                 context["import"] = {"symptom_claim": self.tools.collection["symptom"],
                                      "coverage": coverage}
+            if getattr(self, 'collection_limitations', None):
+                context['acquisition_limitations'] = self.collection_limitations
+            if getattr(self, 'evidence_quality', None):
+                context['quality_warnings'] = [{'id': row['id'], **{k: v for k, v in self.evidence_quality.get(row['id'], {}).items()
+                    if k in {'stale', 'truncated', 'conflicting_ids', 'duplicate_ids'} and v}}
+                    for row in evidence['records'] if any(self.evidence_quality.get(row['id'], {}).get(k)
+                    for k in ('stale', 'truncated', 'conflicting_ids', 'duplicate_ids'))][:4]
             if priority and not priority <= {row["id"] for row in evidence["records"]}:
                 context["evidence"]["partial_trace"] = True
             if self.tools.selection:
@@ -438,33 +546,40 @@ class EvidenceContext:
             if "response_format" in payload and supplied:
                 payload["response_format"] = deepcopy(payload["response_format"])
                 schema = payload["response_format"]["json_schema"]["schema"]
-                schema["properties"]["evidence_ids"]["items"]["enum"] = supplied
-                schema["properties"]["hypotheses"]["items"]["properties"]["evidence_ids"]["items"]["enum"] = supplied
+                if 'evidence_ids' in schema['properties']:
+                    schema["properties"]["evidence_ids"]["items"]["enum"] = supplied
+                    schema["properties"]["hypotheses"]["items"]["properties"]["evidence_ids"]["items"]["enum"] = supplied
                 if "supporting_evidence" in schema["properties"]:
                     schema["properties"]["supporting_evidence"]["items"]["properties"]["evidence_ids"]["items"]["enum"] = supplied
             excess = len(encoded(payload)) - budget
             if excess <= 0:
-                if self.records and not supplied:
-                    raise ValueError("No useful observation fits the complete Groq input bound. Import smaller observations.")
-                # Advisory hints use spare bytes only: they never evict observations.
-                if self.triage:
-                    hint = deepcopy(self.triage)
-                    hint["priorities"] = [group for group in hint["priorities"] if set(group["source_ids"]) <= set(supplied)]
-                    compact_hint = {"note": "Advisory only, not evidence. Test alternatives and conflicting observations.",
-                                    "category": hint.get("category"), "priorities": hint["priorities"][:2]}
-                    focus_hint = {"note": "Advisory only; test alternatives.", "category": hint.get("category"),
-                                  "priority_sources": [source for g in hint["priorities"][:1] for source in g["source_ids"]]}
-                    for label, value in (("full", hint), ("compact", compact_hint), ("focus", focus_hint)):
-                        augmented = deepcopy(payload)
-                        augmented["messages"][1]["content"] += "\nAdvisory initial triage: " + encoded(value).decode()
-                        if len(encoded(augmented)) <= budget:
-                            payload = augmented
-                            self.triage_included = label
-                            break
-                from .selection import provenance
-                self.tools.last_excerpts = provenance(evidence["records"], self.tools.seen, self.tools.selection)
-                return payload, set(supplied)
-            if not evidence["records"]:
-                raise ValueError("Groq input allowance is insufficient for the required request schema.")
-            evidence_budget -= max(128, excess)
-        raise ValueError("Groq input allowance is insufficient for the required request schema.")
+                best = payload, evidence, supplied
+                lower = evidence_budget + 1
+            else:
+                upper = evidence_budget - 1
+            # Row, table, schema and relationship sizes differ. Search the complete
+            # encoded request instead of subtracting an estimate and wasting space.
+            evidence_budget = (lower + upper) // 2
+        if best is None:
+            raise ValueError("Groq input allowance is insufficient for the required request schema.")
+        payload, evidence, supplied = best
+        if self.records and not supplied:
+            raise ValueError("No useful observation fits the complete Groq input bound. Import smaller observations.")
+        # Advisory hints use spare bytes only: they never evict observations.
+        if self.triage:
+            hint = deepcopy(self.triage)
+            hint["priorities"] = [group for group in hint["priorities"] if set(group["source_ids"]) <= set(supplied)]
+            compact_hint = {"note": "Advisory only, not evidence. Test alternatives and conflicting observations.",
+                            "category": hint.get("category"), "priorities": hint["priorities"][:2]}
+            focus_hint = {"note": "Advisory only; test alternatives.", "category": hint.get("category"),
+                          "priority_sources": [source for g in hint["priorities"][:1] for source in g["source_ids"]]}
+            for label, value in (("full", hint), ("compact", compact_hint), ("focus", focus_hint)):
+                augmented = deepcopy(payload)
+                augmented["messages"][1]["content"] += "\nAdvisory initial triage: " + encoded(value).decode()
+                if len(encoded(augmented)) <= budget:
+                    payload = augmented
+                    self.triage_included = label
+                    break
+        from .selection import provenance
+        self.tools.last_excerpts = provenance(evidence["records"], self.tools.seen, self.tools.selection)
+        return payload, set(supplied)

@@ -25,7 +25,7 @@ def user(request, write=False):
 
 def connection(request, write=False):
     owner = user(request, write)
-    row = db.one("SELECT * FROM sentry_connections WHERE id=%s AND user_id=%s", (request.path_params["id"], owner["id"]))
+    row = db.one("SELECT * FROM sentry_connections WHERE id=%s AND user_id=%s AND provider='sentry'", (request.path_params["id"], owner["id"]))
     if not row:
         raise HTTPException(404, "Sentry connection not found.")
     return row
@@ -33,7 +33,7 @@ def connection(request, write=False):
 
 def job(request, write=False):
     owner = user(request, write)
-    row = db.one("SELECT * FROM sentry_imports WHERE id=%s AND user_id=%s", (request.path_params["id"], owner["id"]))
+    row = db.one("SELECT s.* FROM sentry_imports s JOIN sentry_connections c ON c.id=s.connection_id WHERE s.id=%s AND s.user_id=%s AND c.provider='sentry'", (request.path_params["id"], owner["id"]))
     if not row:
         raise HTTPException(404, "Sentry import not found.")
     return row
@@ -47,8 +47,8 @@ def public_connection(row):
 async def listing(request):
     owner = user(request)
     return JSONResponse({"configured": configured(), "public_url": config.PUBLIC_URL,
-        "connections": [public_connection(r) for r in db.all_rows("SELECT * FROM sentry_connections WHERE user_id=%s AND state<>'disconnected' ORDER BY created_at DESC", (owner["id"],))],
-        "imports": [public_import(r) for r in db.all_rows("SELECT * FROM sentry_imports WHERE user_id=%s ORDER BY created_at DESC LIMIT 50", (owner["id"],))]})
+        "connections": [public_connection(r) for r in db.all_rows("SELECT * FROM sentry_connections WHERE user_id=%s AND provider='sentry' AND state<>'disconnected' ORDER BY created_at DESC", (owner["id"],))],
+        "imports": [public_import(r) for r in db.all_rows("SELECT s.* FROM sentry_imports s JOIN sentry_connections c ON c.id=s.connection_id WHERE s.user_id=%s AND c.provider='sentry' ORDER BY s.created_at DESC LIMIT 50", (owner["id"],))]})
 
 
 async def start(request):

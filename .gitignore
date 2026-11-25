@@ -10,7 +10,10 @@ __pycache__/
 *.py[cod]
 
 # Generated checks, coverage and incremental builds
-/tests/
+# Sanitized tests and fixtures are versioned; local captures remain private.
+/tests/artifacts/
+/benchmarks/private/
+/benchmarks/results/
 .pytest_cache/
 .mypy_cache/
 .coverage
@@ -45,3 +48,6 @@ Desktop.ini
 /demo/v1/README.md
 
 .originkit/
+
+# Local interview preparation guide
+/explain/

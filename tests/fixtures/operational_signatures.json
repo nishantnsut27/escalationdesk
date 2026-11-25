@@ -1,0 +1,111 @@
+{
+  "label": "Synthetic redacted operational examples; not customer incidents or published demos. Tags identify explicit symptoms, not deeper causes.",
+  "cases": [
+    {
+      "id": "image",
+      "row": {
+        "message": "ImagePullBackOff: failed to pull image registry.example.invalid/app:[REDACTED]"
+      },
+      "tags": [
+        "image_pull_failure"
+      ]
+    },
+    {
+      "id": "schedule",
+      "row": {
+        "message": "FailedScheduling: 0/3 nodes are available: 3 Insufficient cpu"
+      },
+      "tags": [
+        "failed_scheduling"
+      ]
+    },
+    {
+      "id": "container",
+      "row": {
+        "message": "CreateContainerConfigError: configmap \"[REDACTED]\" not found"
+      },
+      "tags": [
+        "container_configuration",
+        "missing_configuration"
+      ]
+    },
+    {
+      "id": "config",
+      "row": {
+        "message": "missing required environment variable DATABASE_URL=[REDACTED]"
+      },
+      "tags": [
+        "configuration_error",
+        "missing_configuration"
+      ]
+    },
+    {
+      "id": "mount",
+      "row": {
+        "message": "FailedMount: MountVolume.SetUp failed for volume \"data\""
+      },
+      "tags": [
+        "volume_mount_failure"
+      ]
+    },
+    {
+      "id": "disk",
+      "row": {
+        "message": "ENOSPC: no space left on device"
+      },
+      "tags": [
+        "filesystem_error",
+        "disk_exhaustion"
+      ]
+    },
+    {
+      "id": "port",
+      "row": {
+        "message": "listen EADDRINUSE: address already in use 127.0.0.1:8080"
+      },
+      "tags": [
+        "address_conflict"
+      ]
+    },
+    {
+      "id": "db",
+      "row": {
+        "message": "SQLSTATE 53300: remaining connection slots are reserved"
+      },
+      "tags": [
+        "database_connection_limit"
+      ]
+    },
+    {
+      "id": "mixed",
+      "row": {
+        "message": "FailedMount: no space left on device; connection refused"
+      },
+      "tags": [
+        "volume_mount_failure",
+        "disk_exhaustion",
+        "filesystem_error",
+        "connection_refused",
+        "mixed"
+      ]
+    },
+    {
+      "id": "unknown",
+      "row": {
+        "message": "worker stopped responding; reason unavailable"
+      },
+      "tags": [
+        "unknown"
+      ]
+    },
+    {
+      "id": "negative",
+      "row": {
+        "message": "image pulled successfully; pod scheduled; configuration loaded; volume mounted; disk usage 40%; listening on port 8080; available database connections: 12"
+      },
+      "tags": [
+        "unknown"
+      ]
+    }
+  ]
+}

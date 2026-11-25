@@ -347,6 +347,43 @@ Run a live check explicitly, one investigation per invocation (these consume ava
 
 The script requires `DESK_TEST_DATABASE_URL` and starts its own isolated development lab on free loopback ports. It creates a verified fixture account only in a new operator schema on the separate test project; its password stays in memory and email delivery is disabled. It runs real service traffic, polls progress, signs back in, verifies saved results and all structured citations through the protected API, and retains the schema and report/evidence/diagnostic artifacts under `.cache/live-verification/`. `--supplement` explicitly requests one supplement after the original Groq report and verifies that both can be revisited. Every invocation uses the same configured Groq account. Healthy checks make no model call. Review the reported mechanism against the evidence; valid citation IDs alone do not establish semantic correctness.
 
+## Investigation and observability extensions
+
+Connections has one **Integration** selector for Sentry and Datadog. Existing Sentry authorization, saved snapshots and reports remain compatible. New capabilities use additive migrations 8–11, applied by the existing backend startup migration runner. Rehearse upgrades on the separate test database and retain the working database backup and encryption keys before rollout. Never run a second backend against the working database during deployment.
+
+The default investigator remains `v1`. A verified owner can choose **Hypothesis investigator (evaluation)** or its improved-selection variant when investigating a saved collection. The optional engine keeps up to three competing hypotheses, supporting and contradicting source IDs, missing evidence and qualitative support labels. It uses the existing five read-only tools, four diagnostic rounds, six actual Groq attempts, 10 KiB complete-request input and five-minute execution limit. `DESK_INVESTIGATION_VERSION=v2` selects it for automatic investigations after evaluation; keep `v1` during the initial compatibility rollout.
+
+Combine two to five completed, owned snapshots from **Saved evidence**. Combined snapshots retain original record IDs and immutable membership, with optional explicit service/environment aliases. Relationship justifications distinguish shared recorded identities from temporal proximity; neither is automatic proof of causality. New hypothesis investigations retain a source-hashed execution manifest, request/tool records and validation results. **Recorded investigation steps** displays or downloads this recording without calling a model. Historical reports without a journal remain readable. Interrupted requests with unknown outcomes are displayed and never automatically resent.
+
+### Datadog setup and bounded imports
+
+Set `DESK_ENABLE_DATADOG=1` on the backend when ready to test this integration. It defaults to disabled. Reuse `DESK_CONNECTION_KEY`; do not rotate the key protecting existing connections. Datadog credentials are entered through Connections, encrypted on the backend and never returned after setup. No frontend credential or Datadog OAuth application is required.
+
+Use the organization's API key and a scoped application key with the permissions needed for its datasets: `logs_read_data`, `apm_read`, `timeseries_query` and `monitors_read`. Select the matching site (`us1`, `us3`, `us5`, `eu1`, `ap1`, `ap2` or `uk1`). Access checks report each capability independently; absent access does not manufacture empty successful telemetry. See the official [Logs](https://docs.datadoghq.com/api/latest/logs/), [Spans](https://docs.datadoghq.com/api/latest/spans/), [Metrics](https://docs.datadoghq.com/api/latest/metrics/) and [Monitors](https://docs.datadoghq.com/api/latest/monitors/) APIs.
+
+Import a maximum 24-hour window with a service/environment query. Metric collection requires up to five explicit queries. Acquisitions are bounded by 5,000 observations, 10 MiB, 150 pages and five minutes; each API response is limited to 2 MiB. Retention, provider sampling, permissions, truncation and partial pages remain visible. Retries retain a new snapshot. Manual imports never start analysis.
+
+### Datadog monitor automation
+
+In Datadog settings, select **Monitor-triggered investigations**, enter up to twenty monitor IDs and save the desired opt-in/email preferences. Copy the one-time webhook secret into a hidden Datadog webhook variable. Configure the displayed HTTPS URL, `X-TraceDesk-Webhook-Token` header and custom JSON payload using the [Datadog webhook instructions](https://docs.datadoghq.com/integrations/webhooks/). Include that webhook in the selected monitor notifications. Keep secrets out of URLs and telemetry.
+
+The endpoint is `/api/connections/datadog/{connection-id}/webhook`. Trigger identity includes the connection, monitor, normalized group scope and alert cycle. Duplicate/reordered notifications do not create another admitted attempt; recovery before admission cancels pending work. Monitor notifications without a usable service scope retain the alert and disclose missing telemetry instead of querying the entire organization. Optional Sentry enrichment uses owned projects and the same acquisition budget. Sentry and Datadog automatic investigations share the five-per-account UTC daily allowance and existing single investigation worker. Email preferences use the existing Resend delivery path.
+
+A dedicated Datadog test organization and live dual-source monitor/report/email acceptance are still required. Mocked regression checks do not establish real provider delivery or improved root-cause accuracy. Keep Datadog disabled in production until that acceptance is complete.
+
+### Benchmark v2
+
+`benchmarks/v2/` contains sanitized scenario definitions and the scoring rubric. `scripts/capture_benchmark.py` records bounded loopback workloads; `scripts/evaluate_investigations.py` compares frozen current code (A), hypotheses (B), improved selection (C) and real cross-provider captures (D). This is separate from the paused benchmark-v1. The memory case exercises a bounded application allocation guard, and the CPU case measures request computation; neither claims host OOM or system-wide CPU saturation.
+
+For example, capture a fresh private pool recording:
+
+~~~powershell
+.\.venv\Scripts\python.exe scripts/capture_benchmark.py --case pool --output .cache/benchmark-v2/pool
+.\.venv\Scripts\python.exe scripts/evaluate_investigations.py run --help
+~~~
+
+Live runs require `--live` and consume the configured free model allowance. A requires a frozen source directory and matching `manifest.json`; D requires actual `cross_source_evidence`, not copies relabelled as another provider. Keep captures, returned reports and reviews under ignored `.cache/` or `benchmarks/private/`/`benchmarks/results/`. Existing attempts cannot be overwritten. Scores require a review bound to the attempt hash and explicit relevant evidence IDs. Failed and unreviewed attempts remain visible; absent usage and semantic scores remain unknown. No accuracy improvement is claimed before the experiments and citation-support review are completed.
+
 ## Storage and files
 
 - PostgreSQL: accounts/security, sessions, imports/connections, evidence, reports, demo relationships and email delivery records.

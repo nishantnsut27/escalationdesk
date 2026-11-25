@@ -201,7 +201,11 @@ FROM evidence e WHERE e.id=i.evidence_id;
 
 AUTOMATIC_INCIDENTS = (Path(__file__).parent / "migrations" / "006_automatic_incidents.sql").read_text(encoding="utf-8")
 AUTOMATION_HANDOFFS = (Path(__file__).parent / "migrations" / "007_automation_handoffs.sql").read_text(encoding="utf-8")
-MIGRATIONS = ((1, SCHEMA), (2, ACCOUNT_EMAIL), (3, EVIDENCE_ANALYSIS), (4, SIGNATURES_V2), (5, EVIDENCE_TIMESTAMPS), (6, AUTOMATIC_INCIDENTS), (7, AUTOMATION_HANDOFFS))
+EXECUTION_JOURNAL = (Path(__file__).parent / 'migrations' / '008_execution_journal.sql').read_text(encoding='utf-8')
+EVIDENCE_SCOPES = (Path(__file__).parent / 'migrations' / '009_evidence_scopes.sql').read_text(encoding='utf-8')
+OBSERVABILITY_CONNECTIONS = (Path(__file__).parent / 'migrations' / '010_observability_connections.sql').read_text(encoding='utf-8')
+MONITOR_AUTOMATION = (Path(__file__).parent / 'migrations' / '011_monitor_automation.sql').read_text(encoding='utf-8')
+MIGRATIONS = ((1, SCHEMA), (2, ACCOUNT_EMAIL), (3, EVIDENCE_ANALYSIS), (4, SIGNATURES_V2), (5, EVIDENCE_TIMESTAMPS), (6, AUTOMATIC_INCIDENTS), (7, AUTOMATION_HANDOFFS), (8, EXECUTION_JOURNAL), (9, EVIDENCE_SCOPES), (10, OBSERVABILITY_CONNECTIONS), (11, MONITOR_AUTOMATION))
 
 BACKFILL_BATCH_SIZE = 64
 TAG_BACKFILLS = {

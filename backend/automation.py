@@ -40,7 +40,7 @@ def regular(request, write=False):
 
 def owned_connection(request, write=False):
     owner = regular(request, write)
-    row = db.one("SELECT * FROM sentry_connections WHERE id=%s AND user_id=%s", (request.path_params['id'], owner['id']))
+    row = db.one("SELECT * FROM sentry_connections WHERE id=%s AND user_id=%s AND provider='sentry'", (request.path_params['id'], owner['id']))
     if not row:
         raise HTTPException(404, "Sentry connection not found.")
     return row
@@ -52,11 +52,16 @@ def settings(conn, connection):
 
 
 def public_settings(row):
-    return {key: json.loads(value) if key == 'projects' else value for key, value in row.items() if key != 'user_id'}
+    return {key: json.loads(value) if key == 'projects' else value for key, value in row.items() if key not in {'user_id', 'webhook_digest', 'configuration'}}
 
 
 def eligible(conn, connection, project_id):
     option = settings(conn, connection)
+    if connection.get('provider') == 'datadog':
+        return (config.ENABLE_DATADOG and connection['state'] == 'connected' and option['enabled']
+                and project_id in (option.get('configuration') or {}).get('monitor_ids', [])
+                and conn.execute('SELECT 1 FROM account_security WHERE user_id=%s AND verified_at IS NOT NULL', (connection['user_id'],)).fetchone()
+                and not conn.execute('SELECT 1 FROM account_roles WHERE user_id=%s', (connection['user_id'],)).fetchone())
     return (connection['state'] == 'connected' and option['enabled']
         and project_id in json.loads(option['projects'])
         and project_id in {p['id'] for p in json.loads(connection['projects'])}
@@ -224,7 +229,7 @@ def start_attempt(investigation_id):
         episode = conn.execute("SELECT * FROM automatic_incidents WHERE id=%s", (attempt['incident_id'],)).fetchone()
         connection = conn.execute("SELECT * FROM sentry_connections WHERE id=%s", (episode['connection_id'],)).fetchone()
         stamp = time.time()
-        if not eligible(conn, connection, episode['project_id']) or stamp >= attempt['resume_until']:
+        if not eligible(conn, connection, episode.get('resource_id') or episode['project_id']) or stamp >= attempt['resume_until'] or connection.get('provider') == 'datadog' and episode['lifecycle'] == 'resolved':
             message = "Automatic work was disabled or its 24-hour resumption window expired. Retry explicitly."
             finish(conn, episode, attempt, 'interrupted', message)
             conn.execute("UPDATE investigations SET state='interrupted',error=%s,completed_at=%s WHERE id=%s AND state='queued'", (message, db.now(), investigation_id))
@@ -248,7 +253,7 @@ def public_incident(conn, row, detail=False):
         result['resume_until'] = attempts[-1]['resume_until']
     latest = attempts[-1] if attempts else None
     connection = conn.execute("SELECT * FROM sentry_connections WHERE id=%s", (row['connection_id'],)).fetchone()
-    result['retry_allowed'] = bool(latest and latest['state'] in RETRYABLE and eligible(conn, connection, row['project_id']))
+    result['retry_allowed'] = bool(latest and latest['state'] in RETRYABLE and eligible(conn, connection, row.get('resource_id') or row['project_id']))
     result['retry_reason'] = (None if result['retry_allowed'] else 'This incident already has active work.' if latest and latest['state'] in ACTIVE
         else 'Use Analyze further on the saved supported report.' if latest and latest['state'] == 'completed'
         else 'Reconnect Sentry and enable this project before retrying.')
@@ -310,7 +315,7 @@ async def retry(request):
             if old['state'] not in RETRYABLE:
                 raise HTTPException(409, "Use Analyze further on the saved supported report.")
             connection = conn.execute("SELECT * FROM sentry_connections WHERE id=%s", (episode['connection_id'],)).fetchone()
-            if not eligible(conn, connection, episode['project_id']):
+            if not eligible(conn, connection, episode.get('resource_id') or episode['project_id']):
                 raise HTTPException(409, "Reconnect Sentry and enable this project before retrying.")
             stamp = time.time()
             reason = queue_reason(conn, owner['id'], stamp)
@@ -360,6 +365,14 @@ class AutomationWorker:
         rows = await asyncio.to_thread(db.all_rows, "SELECT * FROM automatic_deliveries WHERE state='pending' AND next_attempt<=%s ORDER BY received_at,id LIMIT 10", (time.time(),))
         for delivery in rows:
             try:
+                provider_connection = await asyncio.to_thread(db.one, 'SELECT * FROM sentry_connections WHERE id=%s', (delivery['connection_id'],))
+                if provider_connection and provider_connection.get('provider') == 'datadog':
+                    if not config.ENABLE_DATADOG or provider_connection['state'] != 'connected':
+                        await asyncio.to_thread(db.execute, "UPDATE automatic_deliveries SET state='ignored',error='Datadog disabled or disconnected.' WHERE id=%s", (delivery['id'],))
+                        continue
+                    from .datadog_automation import reconcile
+                    await reconcile(self, provider_connection, delivery)
+                    continue
                 if delivery['action'] == 'created':
                     await asyncio.to_thread(self.prepare_created, delivery)
                     await asyncio.to_thread(self.process_notifications)
@@ -581,7 +594,7 @@ class AutomationWorker:
                     return
             connection = conn.execute("SELECT * FROM sentry_connections WHERE id=%s", (episode['connection_id'],)).fetchone()
             stamp = time.time()
-            if stamp >= attempt['resume_until'] or not eligible(conn, connection, episode['project_id']):
+            if stamp >= attempt['resume_until'] or not eligible(conn, connection, episode.get('resource_id') or episode['project_id']):
                 message = 'The 24-hour automatic resumption window expired. Retry explicitly.' if stamp >= attempt['resume_until'] else 'Automation is disabled or the connection/project is unavailable. Retry explicitly after enabling it.'
                 finish(conn, episode, attempt, 'interrupted', message)
                 if attempt['investigation_id']:
@@ -614,7 +627,11 @@ class AutomationWorker:
                     finish(conn, episode, attempt, 'failed', job['error'] or 'Sentry evidence collection failed. Retained observations remain available.')
                     return
                 elif not attempt['investigation_id']:
-                    if conn.execute("SELECT 1 FROM investigations WHERE collection_id=%s AND state IN ('queued','running','quota_waiting')", (job['collection_id'],)).fetchone():
+                    from .collection_plan import advance as advance_collection
+                    scope_collection = advance_collection(conn, attempt, episode, job)
+                    if scope_collection is None:
+                        return
+                    if conn.execute("SELECT 1 FROM investigations WHERE collection_id=%s AND state IN ('queued','running','quota_waiting')", (scope_collection,)).fetchone():
                         self.defer(conn, episode, attempt, 'An investigation already uses this snapshot. Waiting for it to finish.')
                         return
                     reason = queue_reason(conn, episode['user_id'], stamp, admission=False)
@@ -622,7 +639,8 @@ class AutomationWorker:
                         self.defer(conn, episode, attempt, reason)
                         return
                     identifier = db.uid()
-                    conn.execute("INSERT INTO investigations(id,user_id,collection_id,engine,state,created_at,usage) VALUES(%s,%s,%s,'groq','queued',%s,%s)", (identifier, episode['user_id'], job['collection_id'], db.now(), json.dumps({'triage': {'requested': True, 'state': 'pending'}, 'automatic_incident_id': episode['id'], 'trigger_observation_id': 'auto-trigger-' + job['id']})))
+                    attempt['error'] = conn.execute('SELECT error FROM automatic_attempts WHERE id=%s', (attempt['id'],)).fetchone()['error']
+                    conn.execute("INSERT INTO investigations(id,user_id,collection_id,engine,state,created_at,usage) VALUES(%s,%s,%s,'groq','queued',%s,%s)", (identifier, episode['user_id'], scope_collection, db.now(), json.dumps({'triage': {'requested': True, 'state': 'pending'}, 'automatic_incident_id': episode['id'], 'trigger_observation_id': 'auto-trigger-' + job['id'], 'workflow_version': config.INVESTIGATION_VERSION, 'collection_limitations': attempt.get('error')})))
                     conn.execute("UPDATE automatic_attempts SET investigation_id=%s,state='queued',error=NULL WHERE id=%s", (identifier, attempt['id']))
                     conn.execute("UPDATE automatic_incidents SET state='queued',error=NULL WHERE id=%s", (episode['id'],))
                     return
@@ -636,6 +654,9 @@ class AutomationWorker:
                     self.enqueued.discard(attempt['investigation_id'])
                 return
             if not attempt['import_id']:
+                observation = json.loads(episode['observation'])
+                if not isinstance(observation, dict) or not isinstance(observation.get('source_note'), str):
+                    raise ValueError('Invalid retained trigger observation.')
                 reason = queue_reason(conn, episode['user_id'], stamp, admission=False)
                 if reason:
                     self.defer(conn, episode, attempt, reason)
@@ -644,8 +665,12 @@ class AutomationWorker:
                 # Fifteen minutes ending one minute after the event captures
                 # immediate aftermath without requesting future telemetry.
                 end = min(trigger_time+timedelta(seconds=60), datetime.now(timezone.utc))
-                options = parameters({'projects': [episode['project_id']], 'datasets': ['errors', 'logs', 'spans'], 'start': (end-timedelta(minutes=15)).isoformat(), 'end': end.isoformat(), 'title': episode['title'], 'symptom': 'Sentry reported: ' + episode['title']}, connection)
-                options['issue_id'] = episode['issue_id']
+                if connection.get('provider') == 'datadog':
+                    from .datadog_automation import import_options
+                    options = import_options(episode, connection)
+                else:
+                    options = parameters({'projects': [episode['project_id']], 'datasets': ['errors', 'logs', 'spans'], 'start': (end-timedelta(minutes=15)).isoformat(), 'end': end.isoformat(), 'title': episode['title'], 'symptom': 'Sentry reported: ' + episode['title']}, connection)
+                    options['issue_id'] = episode['issue_id']
                 try:
                     job, created = create_import(episode['user_id'], connection, options, transaction=conn, scope_key=attempt['id'])
                     # An episode/retry always owns a distinct immutable scope.
@@ -656,7 +681,6 @@ class AutomationWorker:
                         self.defer(conn, episode, attempt, 'Evidence import capacity is busy. Automatic resumption remains available for 24 hours.')
                         return
                     raise
-                observation = json.loads(episode['observation'])
                 conn.execute("INSERT INTO evidence(id,user_id,collection_id,kind,service,timestamp,payload) VALUES(%s,%s,%s,'log','unknown',%s,%s)", ('auto-trigger-' + job['id'], episode['user_id'], job['collection_id'], observation.get('timestamp'), json.dumps(observation)))
                 summary = json.loads(conn.execute("SELECT summary FROM collections WHERE id=%s", (job['collection_id'],)).fetchone()['summary'])
                 summary['observations'] += 1
@@ -664,7 +688,8 @@ class AutomationWorker:
                 summary['services'] = sorted(set(summary['services']) | {'unknown'})
                 summary['kinds'] = sorted(set(summary['kinds']) | {'log'})
                 summary['trigger_note'] = observation['source_note']
-                summary['automatic_issue_id'] = episode['issue_id']
+                if episode['issue_id']:
+                    summary['automatic_issue_id'] = episode['issue_id']
                 summary['missing_timestamps'] += int(observation.get('timestamp') is None)
                 conn.execute("UPDATE collections SET summary=%s WHERE id=%s", (json.dumps(summary), job['collection_id']))
                 conn.execute("INSERT INTO automatic_attempt_imports VALUES(%s,%s) ON CONFLICT DO NOTHING", (attempt['id'], job['id']))

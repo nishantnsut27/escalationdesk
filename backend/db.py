@@ -175,9 +175,10 @@ def public_evidence(row):
 
 def evidence(run_id, owner, kind=None, service=None, limit=100, trace_id=None,
              start_time=None, end_time=None, *, collection_id=None, offset=0, query=None, level=None, request_id=None, error_type=None, source_ids=None):
-    field, scope = ("collection_id", collection_id) if collection_id else ("run_id", run_id)
-    statement = f"SELECT e.* FROM evidence e JOIN evidence_index i ON i.evidence_id=e.id WHERE e.{field}=%s AND e.user_id=%s"
-    args = [scope, owner]
+    from .evidence_scope import predicate
+    clause, args = predicate(collection_id=collection_id, run_id=run_id)
+    statement = "SELECT e.* FROM evidence e JOIN evidence_index i ON i.evidence_id=e.id WHERE " + clause + " AND e.user_id=%s"
+    args.append(owner)
     if source_ids is not None:
         statement += " AND e.id=ANY(%s)"
         args.append(list(source_ids))

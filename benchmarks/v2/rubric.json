@@ -1,0 +1,7 @@
+{
+  "version": "benchmark-v2",
+  "review": "Blinded source-bound semantic review; structural validation does not establish entailment.",
+  "arms": {"A": "Frozen current implementation", "B": "Hypotheses with selection v1", "C": "Hypotheses with selection v2", "D": "C with captured cross-provider evidence"},
+  "required_metrics": ["mechanism_correct", "service_correct", "evidence_precision", "retrieved_evidence_recall", "supplied_evidence_recall", "citation_validity", "abstention_correct", "duration_ms", "tool_call_count", "provider_input_tokens", "provider_output_tokens"],
+  "rules": ["Review all citation-bearing fields, including supporting_evidence", "Keep failed attempts", "Missing provider usage is unknown", "Do not expose scenario ground truth to the model", "D adds information; also compare identical combined evidence with correlation enabled and disabled", "Use three repeated runs after validating the single-run pilot", "Never overwrite historical benchmark-v1 artifacts"]
+}
