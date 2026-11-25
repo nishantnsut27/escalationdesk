@@ -10,7 +10,11 @@ __pycache__/
 *.py[cod]
 
 # Generated checks, coverage and incremental builds
-/tests/
+/tests/*
+!/tests/test_postgres_compatibility.py
+!/tests/test_account_flows.py
+!/tests/test_automation_contracts.py
+!/tests/frontend.test.mjs
 .pytest_cache/
 .mypy_cache/
 .coverage

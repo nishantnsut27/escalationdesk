@@ -20,6 +20,8 @@ services:
         value: https://api.tracedesk.nishantraj.me
       - key: DESK_DATABASE_POOL_MAX
         value: '5'
+      - key: DESK_DATA_DIR
+        value: data/supabase
       - key: DESK_ENABLE_LAB
         value: '0'
       - key: SENTRY_REFERENCE_ENABLED

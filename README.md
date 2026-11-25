@@ -12,7 +12,7 @@ The local dependencies and frontend build are already prepared.
 .\start.ps1
 ~~~
 
-Configure the backend settings in [.env.example](.env.example) first. Existing SQLite installations must follow the migration procedure below before restarting this version. Open **http://127.0.0.1:8020** on this machine and create your own account. **Demo Account** accepts **`Demo@login`**; the bundle currently contains six reviewed recordings. The login screen shows the installed count. Verified accounts land on Dashboard. Direct evidence and report links return to their intended destination after authentication.
+Configure the backend settings in [.env.example](.env.example) first. The current deployment starts with a fresh Supabase database and uses `DESK_DATA_DIR=data/supabase`, preserving the older SQLite backup in `data/`. Accounts and connections must be recreated; the backend applies migrations and installs the recorded demos on first startup. Open **http://127.0.0.1:8020** on this machine and create your own account. **Demo Account** accepts **`Demo@login`**; the bundle currently contains six reviewed recordings. The login screen shows the installed count. Verified accounts land on Dashboard. Direct evidence and report links return to their intended destination after authentication.
 
 Stop with Ctrl+C in the launcher, or from another terminal:
 
@@ -119,9 +119,9 @@ For browser verification, use [examples/import-check.jsonl](examples/import-chec
 
 ## Hosted deployment
 
-The configured frontend is **https://tracedesk.nishantraj.me** on Vercel; the backend is **https://api.tracedesk.nishantraj.me** on Render with the existing Neon PostgreSQL database. [vercel.json](vercel.json) builds the Vite frontend and forwards `/api/*` to Render, retaining browser sessions on the frontend domain and disabling API rewrite caching. [render.yaml](render.yaml) records the free Python service, one process, custom API domain and `/api/health` check. For an already-created Render service, apply these settings to that service; creating a separate Blueprint would create another backend.
+The configured frontend is **https://tracedesk.nishantraj.me** on Vercel; the backend is **https://api.tracedesk.nishantraj.me** on Render with Supabase PostgreSQL storage through the Session pooler. This rollout intentionally starts fresh rather than importing the old Neon records. [vercel.json](vercel.json) builds the Vite frontend and forwards `/api/*` to Render, retaining browser sessions on the frontend domain and disabling API rewrite caching. [render.yaml](render.yaml) records the free Python service, one process, custom API domain and `/api/health` check. For an already-created Render service, apply these settings to that service; creating a separate Blueprint would create another backend.
 
-For the clean URL rollout, release the compatible frontend first, then update the existing Render backend that generates email links and Sentry callback destinations. Both hosts serve the app shell for recognized GET/HEAD routes such as `/dashboard`, `/collections/:id` and `/logs`; API errors and missing assets retain their normal responses. Old hash routes and emailed account links remain supported. Explicit regular and demo sign-in opens `/dashboard`, while an existing session retains directly opened citations and filters. New verification/reset links use `/account#auth/...`; the token is captured in memory and removed from the address before explicit confirmation.
+Coordinate the frontend and backend deployment for this release: demo login now reads `/api/demo/availability`, and `/api/health` no longer supplies database-derived counts. Both hosts serve the app shell for recognized GET/HEAD routes such as `/dashboard`, `/collections/:id` and `/logs`; API errors and missing assets retain their normal responses. Old hash routes and emailed account links remain supported. Explicit regular and demo sign-in opens `/dashboard`, while an existing session retains directly opened citations and filters. New verification/reset links use `/account#auth/...`; the token is captured in memory and removed from the address before explicit confirmation.
 
 Use the repository root on both hosts. Render's build command is `pip install -r requirements.txt`; its start command is:
 
@@ -129,9 +129,11 @@ Use the repository root on both hosts. Render's build command is `pip install -r
 python -m uvicorn backend.api:create_app --factory --host 0.0.0.0 --port $PORT --workers 1
 ~~~
 
-Set `PYTHON_VERSION=3.14.6` and `DESK_PUBLIC_URL=https://tracedesk.nishantraj.me` on Render. Keep database, provider, Sentry and Resend credentials on Render only. Reuse `DESK_CONNECTION_KEY` and any separate `DESK_EMAIL_KEY` with the existing database. `backend/.env.render`, when prepared locally, is an ignored private import file; do not publish it. Keep `DESK_ENABLE_LAB=0` and `SENTRY_REFERENCE_ENABLED=0`. Stop the local backend before using the same database on Render; startup marks unfinished work interrupted. Disable automatic backend deploys during setup and deploy when no investigation/import is active. Free Render services can sleep or restart, so background work can be interrupted; saved accounts, sources and reports remain in Neon.
+Set `PYTHON_VERSION=3.14.6` and `DESK_PUBLIC_URL=https://tracedesk.nishantraj.me` on Render. Keep database, provider, Sentry and Resend credentials on Render only. Reuse `DESK_CONNECTION_KEY` and any separate `DESK_EMAIL_KEY`. `backend/.env.render` is an ignored private import file with the Supabase production URL; do not publish it. Keep `DESK_DATABASE_POOL_MAX=5`, `DESK_DATA_DIR=data/supabase`, `DESK_ENABLE_LAB=0` and `SENTRY_REFERENCE_ENABLED=0`. Do not configure `DESK_TEST_DATABASE_URL` or `DESK_TEST_SCHEMA` on production Render. Stop the local backend before using the same database on Render; startup marks unfinished work interrupted. Disable automatic backend deploys during setup and deploy when no investigation/import is active. Free Render services can sleep or restart, so background work can be interrupted; saved accounts, sources and reports remain in PostgreSQL.
 
-Add `api.tracedesk.nishantraj.me` to the existing Render service's custom domains and use the exact DNS record Render provides. The Vercel domain is `tracedesk.nishantraj.me`. After publishing the configuration and redeploying both services, check `/api/health` on both HTTPS domains before testing demo login, regular accounts, email verification and investigations. Hosted acceptance and backup/restore remain pending until exercised.
+Add `api.tracedesk.nishantraj.me` to the existing Render service's custom domains and use the exact DNS record Render provides. The Vercel domain is `tracedesk.nishantraj.me`. After publishing the configuration and redeploying both services, check `/api/health` on both HTTPS domains, then explicitly check `/api/ready` before testing demo login, regular accounts, email verification and investigations. Hosted acceptance and backup/restore remain pending until exercised.
+
+`/api/health` is a database-free liveness check, including for requests carrying session cookies. Keep it as Render's `healthCheckPath`. `/api/ready` separately checks database access and the current migration versions, returning 503 with safe JSON when unavailable or incomplete. Do not use readiness as a frequent uptime probe: it queries PostgreSQL. `/api/demo/availability` supplies the installed recording count when someone opens demo login. Workers still query storage while the backend is running; database-free liveness does not by itself guarantee an idle database.
 
 The Sentry redirect must be **https://tracedesk.nishantraj.me/api/connections/sentry/callback** because it requires the frontend's session cookie. Its installation webhook may use **https://api.tracedesk.nishantraj.me/api/connections/sentry/webhook**. The Resend delivery webhook is **https://api.tracedesk.nishantraj.me/api/email/webhook**. Use these values in the respective provider accounts after the domains are reachable.
 
@@ -226,7 +228,36 @@ The single worker prioritizes fresh investigations over queued supplements. Each
 
 Use Python 3.14 and a Node version compatible with Vite 7. The versions exercised here were Python 3.14.6 and Node 26.7.0.
 
-Configure `DESK_DATABASE_URL` for a Neon development project before starting. Integration tests and operator preparation require `DESK_TEST_DATABASE_URL` on a separate project. Keep both URLs in ignored `backend/.env` or backend environment variables. The application strengthens Neon TLS to `verify-full`; the default pool holds at most five connections per process. There is no SQLite fallback.
+Configure `DESK_DATABASE_URL` for the working PostgreSQL project before starting. Integration tests and operator preparation require `DESK_TEST_DATABASE_URL` on a separate project. Keep both URLs in ignored `backend/.env` or backend environment variables. The application strengthens `sslmode=require` to `verify-full` with trusted certificates; the pool defaults to five connections and accepts limits from one to five per process. There is no SQLite fallback. Supabase uses the Session pooler on port 5432 and a project-qualified username. Tests compare Supabase project references, so separate projects may share a pooler hostname; different roles or database names in one project cannot bypass isolation.
+
+## Move from Neon to Supabase
+
+The current rollout starts with a fresh `tracedesk-production` database. Old Neon accounts, sessions, evidence, reports, connections and automation settings are not copied. Keep the Neon project, its original private configuration and retained SQLite backup separately. TraceDesk continues to manage its own Argon2 passwords and sessions; no Supabase Auth integration is required. Use separate production/test projects in the region nearest Render.
+
+Copy each project's **Connect -> Session pooler** URI into an ignored private file such as `.env.supabase`, using `DESK_DATABASE_URL` for production, `DESK_TEST_DATABASE_URL` for test and `DESK_DATABASE_POOL_MAX=5`. Use port 5432 with the `postgres.PROJECT_REF` username. Percent-encode URI-reserved characters in passwords. Do not post URLs in chat, screenshots or GitHub. Transaction pooling on port 6543 cannot support TraceDesk's query pipelining; direct IPv6 connections are excluded from this configuration. See [Supabase connection documentation](https://supabase.com/docs/guides/database/connecting-to-postgres).
+
+Supabase poolers use the provider's own certificate authority. [supabase-root-2021.crt](backend/certs/supabase-root-2021.crt) is the public production root linked by Supabase's official dashboard, downloaded from [Supabase's certificate distribution](https://supabase-downloads.s3-ap-southeast-1.amazonaws.com/prod/ssl/prod-ca-2021.crt). The backend uses it only for Supabase Session poolers and retains Mozilla/certifi roots for other PostgreSQL providers. `sslmode=verify-full` verifies both the certificate chain and hostname. The root expires on 2031-04-26; its SHA-256 certificate fingerprint is `807025ad50d4ed219d2c9c7d299c004f824eb00cf7f65afef607d07b72e6cafa`. Update it through a reviewed official download if Supabase rotates its CA. See [Supabase SSL guidance](https://supabase.com/docs/guides/platform/ssl-enforcement).
+
+Run the offline compatibility checks and then the test-only rehearsal:
+
+~~~powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_postgres_compatibility.py -v
+.\.venv\Scripts\python.exe scripts/rehearse_postgres.py --env-file .env.supabase --output .cache/supabase/rehearsal.json
+~~~
+
+For account, email and automation logic checks with mocked storage/providers, run `.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_*.py -v`. `npm test` runs the versioned frontend checks. These local checks do not send emails or start live incidents.
+
+The rehearsal loads database settings only for its own process. It refuses a shared production/test project, creates a random schema on the test project, applies every migration, verifies TLS, pipelined transactions, commit/rollback, advisory locks, session connections, bounded pooling, constraints and migration idempotency after reconnection. It removes that schema on completion and writes a credential-free manifest. It never connects to production or changes the retained Neon URL. Passing this rehearsal verifies a fresh schema, not recovery of existing Neon records.
+
+The 2026-11-25 test-project rehearsal passed all ten checks with seven migrations, 35 platform tables and a five-connection pool. Its temporary schema was removed. This proves the fresh schema's compatibility, not transfer of old accounts or reports.
+
+For the fresh rollout, import the prepared private `backend/.env.render` into the existing Render service, replacing `DESK_DATABASE_URL` with the production Session pooler URL and setting `DESK_DATABASE_POOL_MAX=5` and `DESK_DATA_DIR=data/supabase`. Keep `DESK_CONNECTION_KEY`, `DESK_EMAIL_KEY`, `RESEND_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY` and existing Sentry credentials unchanged. The old Neon configuration is retained in ignored `backend/.env.neon-backup-20261125`. Do not add the test database URL to Render. Redeploy one backend instance and deploy the frontend from the same main commit.
+
+On its first start, the backend creates the complete schema and installs six reviewed demo cases without model requests. A new data directory prevents the preserved legacy SQLite file from being mistaken for an unfinished transfer. Regular users sign up again, verify email, reconnect Sentry and explicitly enable automation for authorized projects. No regular account or Sentry automation is pre-enabled.
+
+Account/session, verification/recovery, encrypted email queue, retry/idempotency, delivery-signature and automation-trigger logic are checked locally with mocked storage/providers. Live signup/login, email delivery, Sentry callbacks and hosted incident/report emails are the operator's post-deployment checks. Check health/readiness, invalid login returning 401, demo access, signup/logout/session persistence, verification/recovery and opted-in automation. The SQLite migration procedure below remains available for a separately planned historical transfer; it is not part of this fresh rollout.
+
+Establish regular private logical backups; do not rely on automatic backups for a Supabase Free project. Monitor storage with `SELECT pg_size_pretty(pg_database_size(current_database()));` and review capacity before approaching the project's limit. Follow the current [Supabase backup documentation](https://supabase.com/docs/guides/platform/backups). Never publish dumps or delete evidence automatically to satisfy a plan limit.
 
 ## Migrate an existing SQLite installation
 
@@ -257,7 +288,7 @@ Verify `mail.tracedesk.nishantraj.me` in Resend and configure `RESEND_API_KEY`, 
 
 Add a Resend webhook for `email.sent`, `email.delivered`, `email.delivery_delayed`, `email.failed`, `email.bounced` and `email.complained`. Its final URL is **`https://api.tracedesk.nishantraj.me/api/email/webhook`**; local testing uses the current backend tunnel origin followed by `/api/email/webhook`. Save the endpoint's signing secret in `RESEND_WEBHOOK_SECRET` and restart the backend. Sending works without this secret, but delivery receipts cannot be authenticated until it is configured. Receipts never verify accounts or change passwords.
 
-Existing accounts retain their passwords and saved history; migration sends no bulk mail. Unverified regular accounts sign in to a dedicated verification screen with resend, check-verification and sign-out controls. Verification is sent on signup or explicit request and requires an explicit confirmation within 24 hours. Password reset links expire after 30 minutes, change the password only after submission, revoke existing sessions and establish email ownership. Reset rejects the current password without consuming the link. Password fields have show/hide controls. Recovery offers a registration link for new users while returning the same response for registered, unknown and demo addresses. Both email flows use single-use tokens submitted through POST; the frontend clears link tokens from the address bar. Reopening a used link can display its form, but another submission is rejected. Demo Account remains read-only and cannot use recovery to change its public identity.
+The fresh Supabase rollout requires new registration and sends no bulk mail to old Neon accounts. Unverified regular accounts sign in to a dedicated verification screen with resend, check-verification and sign-out controls. Verification is sent on signup or explicit request and requires an explicit confirmation within 24 hours. Password reset links expire after 30 minutes, change the password only after submission, revoke existing sessions and establish email ownership. Reset rejects the current password without consuming the link. Password fields have show/hide controls. Recovery offers a registration link for new users while returning the same response for registered, unknown and demo addresses. Both email flows use single-use tokens submitted through POST; the frontend clears link tokens from the address bar. Reopening a used link can display its form, but another submission is rejected. Demo Account remains read-only and cannot use recovery to change its public identity.
 
 ## Install dependencies
 
@@ -351,9 +382,9 @@ The script requires `DESK_TEST_DATABASE_URL` and starts its own isolated develop
 
 - PostgreSQL: accounts/security, sessions, imports/connections, evidence, reports, demo relationships and email delivery records.
 - `data/platform.sqlite3`: retained legacy platform database; keep it as a migration backup, not an automatic fallback.
-- `data/payment.sqlite3`: reference-service workload.
-- `data/telemetry/`: captured JSONL service observations.
-- `data/*.log`: process diagnostics.
+- `data/supabase/payment.sqlite3`: optional reference-service workload.
+- `data/supabase/telemetry/`: optional captured JSONL service observations.
+- `data/supabase/*.log`: process diagnostics for the new runtime.
 - `backend/`: API, authentication, services, controller, evidence tools and investigators.
 - `src/`: React application.
 - `tests/`: isolated backend integration and frontend contract checks.

@@ -26,7 +26,7 @@ function AuthForm({ mode = 'login', onSession }: AuthProps) {
   const [error, setError] = useState('')
   const [demoState, setDemoState] = useState<{ demo_available: boolean; demo_case_count: number } | null>(null)
   const signup = mode === 'signup', demo = mode === 'demo-login'
-  useEffect(() => { if (!demo) return; let alive = true; api<{ demo_available: boolean; demo_case_count: number }>('/health').then(value => { if (alive) setDemoState(value) }).catch(e => { if (alive) setError(userMessage(e)) }); return () => { alive = false } }, [demo])
+  useEffect(() => { if (!demo) return; let alive = true; api<{ demo_available: boolean; demo_case_count: number }>('/demo/availability').then(value => { if (alive) setDemoState(value) }).catch(e => { if (alive) setError(userMessage(e)) }); return () => { alive = false } }, [demo])
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError('')
     try {

@@ -27,6 +27,9 @@ from .sentry_imports import ImportWorker
 from . import account_email, email_service
 from . import workspace_api
 from . import automation
+from .postgres_migrations import MIGRATIONS
+
+PUBLIC_DIAGNOSTICS = {"/api/health", "/api/ready", "/api/demo/availability"}
 
 def owned(request, table, record_id):
     user = auth.current(request)
@@ -163,7 +166,22 @@ async def start_supplement(request):
 async def health(request):
     return JSONResponse({"status": "ok", "application": "TraceDesk",
         "frontend_url": config.PUBLIC_URL or None, "api_url": config.API_URL or None,
-        "email_webhook_url": email_service.webhook_url(), **await asyncio.to_thread(demo.availability)})
+        "email_webhook_url": email_service.webhook_url()})
+
+
+async def readiness(request):
+    try:
+        versions = await asyncio.to_thread(db.all_rows, "SELECT version FROM platform_migrations ORDER BY version")
+        ready = [row["version"] for row in versions] == [version for version, _ in MIGRATIONS]
+    except (db.Error, PoolTimeout, TooManyRequests, ValueError):
+        return JSONResponse({"status": "not_ready", "database": "unavailable"}, status_code=503,
+                            headers={"Retry-After": "5", "Cache-Control": "no-store"})
+    return JSONResponse({"status": "ready" if ready else "not_ready", "database": "available",
+                         "schema": "ready" if ready else "pending"}, status_code=200 if ready else 503)
+
+
+async def demo_availability(request):
+    return JSONResponse(await asyncio.to_thread(demo.availability))
 
 async def overview(request):
     user = auth.current(request)
@@ -330,6 +348,8 @@ async def lifespan(app):
 def create_app():
     routes = [
         Route("/api/health", health),
+        Route("/api/ready", readiness),
+        Route("/api/demo/availability", demo_availability),
         Route("/api/auth/signup", auth.signup, methods=["POST"]),
         Route("/api/auth/login", auth.login, methods=["POST"]),
         Route("/api/auth/demo-login", auth.demo_login, methods=["POST"]),
@@ -389,7 +409,7 @@ def create_app():
                 response.headers["Server-Timing"] = f"auth;dur={auth_ms:.1f}, db;dur={metrics['db']:.1f}, total;dur={total_ms:.1f}"
             return response
         try:
-            if request.url.path.startswith("/api/") and request.cookies.get(auth.COOKIE):
+            if request.url.path.startswith("/api/") and request.url.path not in PUBLIC_DIAGNOSTICS and request.cookies.get(auth.COOKIE):
                 auth_started = time.perf_counter()
                 try:
                     user = await asyncio.to_thread(auth.current,request)

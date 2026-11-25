@@ -303,7 +303,7 @@ def migrate(conn):
                 execute_statements(conn, pending)
                 pending = []
                 # Read batch results outside pipeline mode; long-lived result
-                # streams through the Neon proxy can stall pipeline completion.
+                # streams through a PostgreSQL proxy can stall pipeline completion.
                 backfill_evidence(conn, operation)
             else:
                 pending.append(part)
